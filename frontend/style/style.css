@@ -1,1 +1,173 @@
+body { 
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+    margin: 30px; 
+    background-color: #f5f6f8; 
+    color: #333; 
+}
 
+.card-section { 
+    background: white; 
+    padding: 20px; 
+    margin-bottom: 20px; 
+    border-radius: 8px; 
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05); 
+}
+
+h2 { 
+    margin-top: 0; 
+    color: #2c3e50; 
+    border-bottom: 2px solid #ecf0f1; 
+    padding-bottom: 8px; 
+}
+
+.pool-categorias { 
+    display: flex; 
+    gap: 40px; 
+    margin-bottom: 15px; 
+}
+
+.categoria-col { 
+    background: #fafafa; 
+    padding: 15px; 
+    border-radius: 6px; 
+    border: 1px solid #e2e8f0; 
+    min-width: 150px; 
+}
+
+.opcion-item {
+    background: white;
+    padding: 10px;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    margin: 8px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between; /* Deja el ícono a la derecha */
+    gap: 8px;
+    user-select: none;
+    transition: box-shadow 0.2s, background-color 0.2s;
+}
+
+/* Estado visual temporal mientras se arrastra la fila Y */
+.opcion-item.dragging {
+    opacity: 0.5;
+    background-color: #eff6ff;
+    border: 1px dashed #3b82f6;
+    box-shadow: 0 4px 10px rgba(59, 130, 246, 0.15);
+}
+
+/* Indicador visual de arrastre */
+.handle-drag {
+    color: #94a3b8;
+    cursor: grab;
+    font-size: 16px;
+    padding-left: 10px;
+}
+
+.handle-drag:active {
+    cursor: grabbing;
+}
+
+.error-box { 
+    background-color: #fde8e8; 
+    border-left: 5px solid #f05252; 
+    color: #9b1c1c; 
+    padding: 12px; 
+    border-radius: 4px; 
+    display: none; 
+    margin-top: 15px; 
+    font-weight: bold; 
+}
+
+.success-box { 
+    background-color: #def7ec; 
+    border-left: 5px solid #31c48d; 
+    color: #03543f; 
+    padding: 12px; 
+    border-radius: 4px; 
+    font-weight: bold; 
+}
+
+.file-list { 
+    list-style: none; 
+    padding-left: 0; 
+}
+
+.file-list li { 
+    padding: 10px 14px; 
+    background: #f8fafc; 
+    border: 1px solid #e2e8f0; 
+    margin-bottom: 5px; 
+    border-radius: 4px; 
+    font-size: 14px; 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center; 
+}
+
+.txt-muted {
+    color: #94a3b8;
+}
+
+.badge-info { 
+    font-family: monospace; 
+    background: #e2e8f0; 
+    padding: 3px 8px; 
+    border-radius: 4px; 
+    color: #0f172a; 
+    font-size: 12px; 
+}
+
+.btn-agregar { 
+    background-color: #3b82f6; 
+    color: white; 
+    border: none; 
+    padding: 10px 20px; 
+    font-size: 14px; 
+    border-radius: 6px; 
+    cursor: pointer; 
+    font-weight: bold; 
+    transition: background 0.2s; 
+}
+
+.btn-agregar:hover { 
+    background-color: #2563eb; 
+}
+
+.btn-agregar:disabled { 
+    background-color: #cbd5e1; 
+    cursor: not-allowed; 
+}
+
+/* Ocultar el input file nativo para que se use el botón estilizado */
+#input-archivo-nativo {
+    display: none;
+}
+
+.file-link {
+    color: #2563eb;
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.file-link:hover {
+    color: #1d4ed8;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.btn-eliminar {
+    background-color: #ef4444;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background 0.2s;
+}
+
+.btn-eliminar:hover {
+    background-color: #dc2626;
+}
