@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Extra
+storage_database/documents_pool/
+.gitignore
