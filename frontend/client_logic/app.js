@@ -7,15 +7,13 @@ const listaArchivos = document.getElementById('lista-archivos');
 const motivoError = document.getElementById('motivo-error');
 const mensajeEstado = document.getElementById('estado-mensaje');
 
-// Diccionario con los textos amigables que el usuario final debe leer en los controles
-const diccionarioTextos = {
-    'Opcion_Free': 'Gratuito (Free)',
-    'Opcion_Premium': 'Premium',
-    'Region_LATAM': 'LATAM',
-    'Region_EUROPA': 'Europa',
-    'Datos_Historicos': 'Históricos',
-    'Datos_Auditoria': 'Auditoría'
-};
+// Diccionario con los textos amigables que el usuario final debe leer en los controles.
+// PENDIENTE: tras el nuevo seed de orden_opciones (Grupo_c, Grupo_e, Grupo_g, Grupo_i,
+// Grupo_l, Grupo_n) los códigos antiguos (Opcion_Free, Region_LATAM, etc.) ya no existen.
+// Los nuevos códigos (a, b, aa, hh...) aún no tienen significado de negocio definido, así
+// que se deja vacío a propósito: el fallback de abajo (diccionarioTextos[id] || id) muestra
+// el código crudo hasta que se agreguen sus etiquetas reales aquí.
+const diccionarioTextos = {};
 
 // --- EVENTOS DE ESCUCHA ---
 

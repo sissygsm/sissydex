@@ -4,22 +4,35 @@ import xxhash
 from flask import Flask, jsonify, request, render_template, send_from_directory
 from werkzeug.utils import secure_filename
 
-app = Flask(__name__)
-DB_PATH = "catalogo_archivos.db"
-MEDIA_FOLDER = "media"
+# Raíz del proyecto (dos niveles arriba de backend/services/)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+TEMPLATE_DIR = os.path.join(PROJECT_ROOT, "frontend", "templates")
+STYLE_DIR = os.path.join(PROJECT_ROOT, "frontend", "style")
+CLIENT_LOGIC_DIR = os.path.join(PROJECT_ROOT, "frontend", "client_logic")
 
-# Asegurar que la carpeta física 'media/' exista en el disco
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STYLE_DIR, static_url_path="/static")
+
+DB_PATH = os.path.join(PROJECT_ROOT, "storage_database", "documents_pool", "catalogo_archivos.db")
+MEDIA_FOLDER = os.path.join(PROJECT_ROOT, "storage_database", "documents_pool")
+
+# Asegurar que la carpeta física de almacenamiento exista en el disco
 os.makedirs(MEDIA_FOLDER, exist_ok=True)
+
+
+@app.route('/static/app.js')
+def static_app_js():
+    """app.js vive en frontend/client_logic, fuera de la carpeta static_folder."""
+    return send_from_directory(CLIENT_LOGIC_DIR, 'app.js')
 
 class LogicaNegocioArchivos:
     def __init__(self):
         self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        self.cursor = self.conn.cursor()
         self._inicializar_db()
 
     def _inicializar_db(self):
         # 1. Tabla de archivos existente
-        self.cursor.execute('''
+        cursor = self.conn.cursor()
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS archivos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 nombre_original TEXT NOT NULL,
@@ -29,7 +42,7 @@ class LogicaNegocioArchivos:
         ''')
         
         # 2. NUEVA TABLA: Almacena de forma persistente la matriz visual (X, Y) de cada opción
-        self.cursor.execute('''
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS orden_opciones (
                 categoria TEXT NOT NULL,
                 opcion_id TEXT NOT NULL,
@@ -39,8 +52,8 @@ class LogicaNegocioArchivos:
         ''')
         
         # Insertar valores por defecto ordenados inicialmente (X, Y) si la tabla está vacía
-        self.cursor.execute("SELECT COUNT(*) FROM orden_opciones")
-        if self.cursor.fetchone()[0] == 0:
+        cursor.execute("SELECT COUNT(*) FROM orden_opciones")
+        if cursor.fetchone()[0] == 0:
             valores_iniciales = [
                 # Categoría a (Opciones A hasta H)
                 ('a', 'A', 1), ('a', 'B', 2), ('a', 'C', 3), ('a', 'D', 4),
@@ -67,25 +80,24 @@ class LogicaNegocioArchivos:
                 ('k', 'NN', 1), ('k', 'OO', 2), ('k', 'PP', 3)
             ]
 
-            self.cursor.executemany(
+            cursor.executemany(
                 "INSERT INTO orden_opciones (categoria, opcion_id, posicion_y) VALUES (?, ?, ?)",
                 valores_iniciales
             )
             self.conn.commit()
             
         self.conn.commit()
+        cursor.close()
 
     def validar_combinacion(self, opciones_seleccionadas):
         """
         REGLA DE NEGOCIO: Centraliza las restricciones aquí.
-        Ejemplo: No se puede seleccionar 'Opcion_Premium' junto con 'Opcion_Free'.
+        SUSPENDIDO TEMPORALMENTE: las reglas antiguas referenciaban códigos
+        (Opcion_Premium/Opcion_Free) que ya no existen tras el nuevo seed de
+        orden_opciones. Se acepta cualquier combinación hasta que se defina el
+        significado real de los nuevos códigos (a, b, aa, etc.) y se reescriban
+        las reglas de negocio correspondientes.
         """
-        if "Opcion_Premium" in opciones_seleccionadas and "Opcion_Free" in opciones_seleccionadas:
-            return False, "Conflictos de negocio: No se puede combinar una cuenta Premium con una Free simultáneamente."
-        
-        if len(opciones_seleccionadas) > 4:
-            return False, "Límite excedido: No se permiten más de 4 opciones activas simultáneamente."
-            
         return True, "Combinación totalmente válida."
     
     def calcular_hash_opciones(self, opciones_seleccionadas):
@@ -97,37 +109,46 @@ class LogicaNegocioArchivos:
 
     def obtener_mapa_orden(self):
         """Retorna el orden actual ordenado de arriba a abajo (Y creciente)"""
-        self.cursor.execute("SELECT categoria, opcion_id, posicion_y FROM orden_opciones ORDER BY categoria, posicion_y ASC")
-        filas = self.cursor.fetchall()
-        
-        # Estructurar como un diccionario de categorías
-        mapa = {"Suscripcion": [], "Region": [], "TipoDatos": []}
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT categoria, opcion_id, posicion_y FROM orden_opciones ORDER BY categoria, posicion_y ASC")
+        filas = cursor.fetchall()
+
+        # Estructurar dinámicamente como un diccionario de categorías: ya no se
+        # asume una lista fija (Suscripcion/Region/TipoDatos), sino que se toman
+        # las categorías tal cual existen en la tabla (p. ej. Grupo_c, Grupo_e...)
+        mapa = {}
         for cat, op_id, pos in filas:
-            if cat in mapa:
-                mapa[cat].append(op_id)
+            mapa.setdefault(cat, []).append(op_id)
+        
+        cursor.close()
         return mapa
 
     def actualizar_orden_categoria(self, categoria, lista_opciones):
         """Actualiza en bloque las posiciones Y para una categoría específica"""
         # Eliminar el orden viejo de esa categoría para evitar conflictos de llave primaria
-        self.cursor.execute("DELETE FROM orden_opciones WHERE categoria = ?", (categoria,))
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM orden_opciones WHERE categoria = ?", (categoria,))
         
         # Insertar las nuevas posiciones Y correlativas (1, 2, 3...)
         for indice, opcion_id in enumerate(lista_opciones, start=1):
-            self.cursor.execute(
+            cursor.execute(
                 "INSERT INTO orden_opciones (categoria, opcion_id, posicion_y) VALUES (?, ?, ?)",
                 (categoria, opcion_id, indice)
             )
         self.conn.commit()
+        cursor.close()
 
     def listar_archivos_por_combinacion(self, opciones_seleccionadas):
         """Busca y lista los archivos que fueron guardados bajo esta combinación exacta."""
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
-        self.cursor.execute(
+        cursor = self.conn.cursor()
+        cursor.execute(
             "SELECT id, nombre_original, hash_calculado_hex FROM archivos WHERE combinacion_opciones = ?",
             (texto_opciones,)
         )
-        return [{"id": fila[0], "nombre": fila[1], "hash": fila[2]} for fila in self.cursor.fetchall()]
+        archivos_listados = [{"id": fila[0], "nombre": fila[1], "hash": fila[2]} for fila in cursor.fetchall()]
+        cursor.close()
+        return archivos_listados
 
     def procesar_y_guardar_archivo(self, archivo_flask, opciones_seleccionadas):
         """
@@ -146,11 +167,12 @@ class LogicaNegocioArchivos:
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
 
         # Registrar inicialmente el archivo para detonar el AUTOINCREMENT (PK)
-        self.cursor.execute(
+        cursor = self.conn.cursor()
+        cursor.execute(
             "INSERT INTO archivos (nombre_original, combinacion_opciones) VALUES (?, ?)",
             (nombre_original, texto_opciones)
         )
-        pk_generada = self.cursor.lastrowid  # Obtener la PK generada automáticamente
+        pk_generada = cursor.lastrowid  # Obtener la PK generada automáticamente
 
         # Calcular el hash definitivo: Operación XOR entre la PK (int) y el Hash de Opciones (int)
         hash_opciones_int = self.calcular_hash_opciones(opciones_seleccionadas)
@@ -158,11 +180,12 @@ class LogicaNegocioArchivos:
         hash_final_hex = f"{hash_final_int:08x}"
 
         # Actualizar el registro con su Hash definitivo asignado
-        self.cursor.execute(
+        cursor.execute(
             "UPDATE archivos SET hash_calculado_hex = ? WHERE id = ?",
             (hash_final_hex, pk_generada)
         )
         self.conn.commit()
+        cursor.close()
         
         return pk_generada, hash_final_hex
    
