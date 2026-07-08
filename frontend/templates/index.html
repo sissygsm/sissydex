@@ -1,1 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestor de Archivos - Almacenamiento Centralizado</title>
+    
+    <!-- Rutas corregidas para que apunten a la carpeta static -->
+    <link rel="stylesheet" href="/static/style.css">
+    <script defer src="/static/app.js"></script>
+</head>
+<body>
 
+    <!-- 1ra Sección: Buscador de archivos asociados a la combinación actual -->
+    <section class="card-section">
+        <h2>1ra Sección: Archivos de la Combinación Seleccionada</h2>
+        <p>Muestra los archivos guardados físicamente en <span class="badge-info">media/</span> filtrados por tu selección:</p>
+        <ul id="lista-archivos" class="file-list">
+            <li class="txt-muted">Seleccione opciones para consultar archivos en la base de datos.</li>
+        </ul>
+    </section>
+
+    <!-- 2da Sección: Pool de Categorías y Mensajes de Exclusión de Negocio -->
+    <section class="card-section">
+        <h2>2da Sección: Pool de Categorías y Opciones Reordenables</h2>
+        <div class="pool-categorias">
+            
+            <!-- Categoría Suscripción (Columna X) -->
+            <div class="categoria-col" id="col-Suscripcion" data-categoria="Suscripcion">
+                <h3>a</h3>
+                <!-- El JS inyectará aquí las opciones ordenadas según la base de datos -->
+            </div>
+            
+            <!-- Categoría Región (Columna X) -->
+            <div class="categoria-col" id="col-Region" data-categoria="Accesorios">
+                <h3>b</h3>
+            </div>
+            
+            <!-- Categoría Tipo de Datos (Columna X) -->
+            <div class="categoria-col" id="col-TipoDatos" data-categoria="Estimulation">
+                <h3>c</h3>
+            </div>
+            
+            <!-- Categoría Suscripción (Columna X) -->
+            <div class="categoria-col" id="col-Suscripcion" data-categoria="Nueva">
+                <h3>d</h3>
+                <!-- El JS inyectará aquí las opciones ordenadas según la base de datos -->
+            </div>
+            
+            <!-- Categoría Región (Columna X) -->
+            <div class="categoria-col" id="col-Region" data-categoria="Estado del pene">
+                <h3>e</h3>
+            </div>
+            
+            <!-- Categoría Tipo de Datos (Columna X) -->
+            <div class="categoria-col" id="col-TipoDatos" data-categoria="TipoDatos">
+                <h3>f</h3>
+            </div>
+
+        </div>
+        <div id="motivo-error" class="error-box"></div>
+    </section>
+
+
+    <!-- 3ra Sección: Cuadro de Texto de Estado de Negocio -->
+    <section class="card-section">
+        <h2>3ra Sección: Estado de Combinación</h2>
+        <div id="estado-mensaje" class="success-box">Agregar un nuevo archivo con el botón AGREGAR</div>
+    </section>
+
+    <!-- 4ta Sección: Explorador de Archivos Nativo y Acción de Subida -->
+    <section class="card-section">
+        <h2>4ta Sección: Transferencia e Indexación de Archivos</h2>
+        <input type="file" id="input-archivo-nativo">
+        <button id="btn-subir" class="btn-agregar">AGREGAR ARCHIVO</button>
+    </section>
+
+</body>
+</html>
