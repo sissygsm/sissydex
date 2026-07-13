@@ -2,6 +2,7 @@ import os
 import sqlite3
 import xxhash
 from flask import Flask, jsonify, request, render_template, send_from_directory
+from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 # Raíz del proyecto (dos niveles arriba de backend/services/)
@@ -14,6 +15,7 @@ app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STYLE_DIR, sta
 
 DB_PATH = os.path.join(PROJECT_ROOT, "storage_database", "documents_pool", "catalogo_archivos.db")
 MEDIA_FOLDER = os.path.join(PROJECT_ROOT, "storage_database", "documents_pool")
+SEED_SQL_PATH = os.path.join(PROJECT_ROOT, "storage_database", "seeds", "orden_opciones_seed.sql")
 
 # Asegurar que la carpeta física de almacenamiento exista en el disco
 os.makedirs(MEDIA_FOLDER, exist_ok=True)
@@ -51,41 +53,24 @@ class LogicaNegocioArchivos:
             )
         ''')
         
-        # Insertar valores por defecto ordenados inicialmente (X, Y) si la tabla está vacía
+        # Si la tabla quedó vacía (BD nueva o borrada a mano), autopoblarla desde
+        # el seed ya generado y versionado en git (storage_database/seeds/
+        # orden_opciones_seed.sql), ejecutado acá con sqlite3 de Python -sin
+        # depender del binario `sqlite3` de línea de comandos, que puede no estar
+        # instalado (`make apply-seed` sí lo requiere). La fuente de verdad sigue
+        # siendo el CSV (storage_database/seeds/orden_opciones.csv); NO se
+        # hardcodea ninguna copia de esos datos acá, para evitar que este fallback
+        # vuelva a divergir del CSV como pasaba antes.
         cursor.execute("SELECT COUNT(*) FROM orden_opciones")
         if cursor.fetchone()[0] == 0:
-            valores_iniciales = [
-                # Categoría a (Opciones A hasta H)
-                ('a', 'A', 1), ('a', 'B', 2), ('a', 'C', 3), ('a', 'D', 4),
-                ('a', 'E', 5), ('a', 'F', 6), ('a', 'G', 7), ('a', 'H', 8),
+            if os.path.exists(SEED_SQL_PATH):
+                with open(SEED_SQL_PATH, "r", encoding="utf-8") as f:
+                    self.conn.executescript(f.read())
+            else:
+                print(f"[document_logic] Aviso: no se encontró {SEED_SQL_PATH}; "
+                      "orden_opciones queda vacía. Corré 'make seed' para generarlo "
+                      "a partir de orden_opciones.csv.")
 
-                # Categoría c (Opciones I hasta N)
-                ('c', 'I', 1), ('c', 'J', 2), ('c', 'K', 3), ('c', 'L', 4),
-                ('c', 'M', 5), ('c', 'N', 6),
-
-                # Categoría e (Opciones O hasta X)
-                ('e', 'O', 1), ('e', 'P', 2), ('e', 'Q', 3), ('e', 'R', 4),
-                ('e', 'S', 5), ('e', 'T', 6), ('e', 'U', 7), ('e', 'V', 8),
-                ('e', 'W', 9), ('e', 'X', 10),
-
-                # Categoría g (Opciones Y hasta JJ)
-                ('g', 'Y', 1), ('g', 'Z', 2), ('g', 'AA', 3), ('g', 'BB', 4),
-                ('g', 'CC', 5), ('g', 'DD', 6), ('g', 'EE', 7), ('g', 'FF', 8),
-                ('g', 'GG', 9), ('g', 'HH', 10), ('g', 'II', 11), ('g', 'JJ', 12),
-
-                # Categoría i (Opciones KK hasta MM)
-                ('i', 'KK', 1), ('i', 'LL', 2), ('i', 'MM', 3),
-
-                # Categoría k (Opciones NN hasta PP)
-                ('k', 'NN', 1), ('k', 'OO', 2), ('k', 'PP', 3)
-            ]
-
-            cursor.executemany(
-                "INSERT INTO orden_opciones (categoria, opcion_id, posicion_y) VALUES (?, ?, ?)",
-                valores_iniciales
-            )
-            self.conn.commit()
-            
         self.conn.commit()
         cursor.close()
 
@@ -125,10 +110,20 @@ class LogicaNegocioArchivos:
 
     def actualizar_orden_categoria(self, categoria, lista_opciones):
         """Actualiza en bloque las posiciones Y para una categoría específica"""
-        # Eliminar el orden viejo de esa categoría para evitar conflictos de llave primaria
         cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM orden_opciones WHERE categoria = ?", (categoria,))
-        
+
+        # Eliminar cualquier fila previa de estas opciones sin importar en qué
+        # categoría estuvieran antes. El drag-and-drop nativo reparenta el elemento
+        # arrastrado al soltar, así que "dragend" solo dispara el guardado en la
+        # columna DESTINO — la columna ORIGEN nunca recibe su propio guardado. Si
+        # solo borráramos por `categoria`, la fila vieja en la categoría de origen
+        # quedaría huérfana y la opción aparecería duplicada en dos categorías tras
+        # recargar la página.
+        cursor.executemany(
+            "DELETE FROM orden_opciones WHERE opcion_id = ?",
+            [(opcion_id,) for opcion_id in lista_opciones]
+        )
+
         # Insertar las nuevas posiciones Y correlativas (1, 2, 3...)
         for indice, opcion_id in enumerate(lista_opciones, start=1):
             cursor.execute(
@@ -139,14 +134,35 @@ class LogicaNegocioArchivos:
         cursor.close()
 
     def listar_archivos_por_combinacion(self, opciones_seleccionadas):
-        """Busca y lista los archivos que fueron guardados bajo esta combinación exacta."""
+        """
+        Busca y lista los archivos que fueron guardados bajo esta combinación exacta.
+        Como el frontend llama a este método cada 2s (ver INTERVALO_REFRESCO_MS en
+        app.js), autosanamos acá mismo: si un archivo fue borrado manualmente del
+        disco (fuera de la app), su fila queda huérfana hasta que algo la limpie.
+        Sin esta verificación, el polling del frontend no alcanzaba para reflejar
+        el borrado -solo lo hacía storage_database/watcher.py, que requiere correr
+        `make watch` en un proceso aparte-.
+        """
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT id, nombre_original, hash_calculado_hex FROM archivos WHERE combinacion_opciones = ?",
             (texto_opciones,)
         )
-        archivos_listados = [{"id": fila[0], "nombre": fila[1], "hash": fila[2]} for fila in cursor.fetchall()]
+        filas = cursor.fetchall()
+
+        archivos_listados = []
+        ids_huerfanos = []
+        for archivo_id, nombre_original, hash_calculado_hex in filas:
+            if os.path.exists(os.path.join(MEDIA_FOLDER, nombre_original)):
+                archivos_listados.append({"id": archivo_id, "nombre": nombre_original, "hash": hash_calculado_hex})
+            else:
+                ids_huerfanos.append(archivo_id)
+
+        if ids_huerfanos:
+            cursor.executemany("DELETE FROM archivos WHERE id = ?", [(i,) for i in ids_huerfanos])
+            self.conn.commit()
+
         cursor.close()
         return archivos_listados
 
@@ -186,9 +202,51 @@ class LogicaNegocioArchivos:
         )
         self.conn.commit()
         cursor.close()
-        
+
         return pk_generada, hash_final_hex
-   
+
+    def eliminar_archivo(self, archivo_id):
+        """
+        Busca el registro por su PK, borra el archivo físico si aún existe
+        y elimina el registro de la base de datos.
+        Retorna el nombre_original si se eliminó, o None si el id no existe.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT nombre_original FROM archivos WHERE id = ?", (archivo_id,))
+        resultado = cursor.fetchone()
+
+        if not resultado:
+            cursor.close()
+            return None
+
+        nombre_archivo = resultado[0]
+        ruta_fisica = os.path.join(MEDIA_FOLDER, nombre_archivo)
+
+        # Eliminar el archivo físico solo si sigue presente en disco
+        if os.path.exists(ruta_fisica):
+            os.remove(ruta_fisica)
+
+        cursor.execute("DELETE FROM archivos WHERE id = ?", (archivo_id,))
+        self.conn.commit()
+        cursor.close()
+
+        return nombre_archivo
+
+    def eliminar_por_nombre(self, nombre_archivo):
+        """
+        Autosanado: borra cualquier registro de `archivos` cuyo nombre_original
+        coincida, sin importar su PK. Se usa cuando /media/<filename> detecta
+        que el archivo ya no existe físicamente (borrado manual, watcher, o la
+        ventana de espera antes de que cualquiera de los dos actualice la BD),
+        para que ese registro deje de aparecer en el listado desde ya, en vez
+        de depender únicamente de que storage_database/watcher.py esté corriendo.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM archivos WHERE nombre_original = ?", (nombre_archivo,))
+        eliminados = cursor.rowcount
+        self.conn.commit()
+        cursor.close()
+        return eliminados
 
 
 negocio = LogicaNegocioArchivos()
@@ -267,9 +325,25 @@ def subir_archivo():
 def servir_archivo_multimedia(filename):
     """
     Busca el archivo dentro de la carpeta 'media/' y lo envía al navegador.
-    Flask detectará automáticamente el tipo (mp3, mp4, png, txt) para que 
+    Flask detectará automáticamente el tipo (mp3, mp4, png, txt) para que
     el navegador lo reproduzca en lugar de descargarlo de golpe.
     """
+    ruta_fisica = os.path.join(MEDIA_FOLDER, filename)
+
+    if not os.path.isfile(ruta_fisica):
+        # El archivo ya no existe en disco (borrado manual, por el watcher, o
+        # la ventana de espera antes de que cualquiera de los dos actualice la
+        # BD). Autosanar cualquier registro huérfano que aún lo referencie, y
+        # mostrar un error claro en vez del 404 genérico de Flask.
+        negocio.eliminar_por_nombre(filename)
+        nombre_seguro = escape(filename)
+        return (
+            "<h2>Archivo no encontrado</h2>"
+            f"<p>El archivo <code>{nombre_seguro}</code> ya no existe en el almacenamiento. "
+            "Es posible que haya sido eliminado.</p>"
+            '<p><a href="/">Volver al inicio</a></p>'
+        ), 404
+
     return send_from_directory(MEDIA_FOLDER, filename)
 
 # =====================================================================
@@ -282,26 +356,13 @@ def eliminar_archivo(archivo_id):
     y finalmente elimina su registro en la base de datos.
     """
     try:
-        # 1. Buscar el nombre del archivo en la base de datos usando la PK
-        negocio.cursor.execute("SELECT nombre_original FROM archivos WHERE id = ?", (archivo_id,))
-        resultado = negocio.cursor.fetchone()
-        
-        if not resultado:
+        resultado = negocio.eliminar_archivo(archivo_id)
+
+        if resultado is None:
             return jsonify({"success": False, "error": "El archivo no existe en la base de datos."}), 404
-            
-        nombre_archivo = resultado[0]
-        ruta_fisica = os.path.join(MEDIA_FOLDER, nombre_archivo)
-        
-        # 2. Eliminar el archivo físico del disco si existe
-        if os.path.exists(ruta_fisica):
-            os.remove(ruta_fisica)
-            
-        # 3. Eliminar el registro de la base de datos
-        negocio.cursor.execute("DELETE FROM archivos WHERE id = ?", (archivo_id,))
-        negocio.conn.commit()
-        
+
         return jsonify({"success": True, "mensaje": "Archivo eliminado correctamente."})
-        
+
     except Exception as e:
         return jsonify({"success": False, "error": f"Error al eliminar: {str(e)}"}), 500
     
