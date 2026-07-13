@@ -50,8 +50,8 @@ inputArchivo.addEventListener('change', function() {
     .then(res => res.json())
     .then(data => {
         if(data.success) {
-            alert(`¡Éxito!\nArchivo movido a 'media/'.\nRegistrado en BD con PK: [${data.pk}]\nHash generado a partir de la PK: ${data.hash_generado}`);
-            actualizarVistaAplicacion(); 
+            mostrarNotificacionSubida(data.pk, data.hash_generado);
+            actualizarVistaAplicacion();
         } else {
             alert(`Error de validación del backend: ${data.error}`);
         }
@@ -123,19 +123,48 @@ function actualizarVistaAplicacion() {
             motivoError.style.display = "none";
         }
 
-        // REGLA DE RENDERIZADO - 3ra y 4ta Sección (Mensajes de Control y Botón)
-        if (data.valido) {
-            mensajeEstado.innerText = "Agregar un nuevo archivo con el botón AGREGAR";
-            mensajeEstado.className = "success-box";
-            btnSubir.disabled = false;
-        } else {
-            mensajeEstado.innerText = "No se puede definir esa combinación de opciones.";
-            mensajeEstado.className = "error-box";
-            mensajeEstado.style.display = "block";
-            btnSubir.disabled = true;
+        // REGLA DE RENDERIZADO - 4ta Sección (Botón): siempre se actualiza,
+        // independientemente de si hay una notificación de subida en pantalla.
+        btnSubir.disabled = !data.valido;
+
+        // REGLA DE RENDERIZADO - 3ra Sección (Mensaje de Control): este polling
+        // corre cada 2s (ver INTERVALO_REFRESCO_MS), así que si hay una notificación
+        // de subida reciente en pantalla (ver mostrarNotificacionSubida) no la
+        // pisamos - se limpia sola con su propio setTimeout.
+        if (!notificacionSubidaActiva) {
+            if (data.valido) {
+                mensajeEstado.innerText = "Agregar un nuevo archivo con el botón AGREGAR";
+                mensajeEstado.className = "success-box";
+            } else {
+                mensajeEstado.innerText = "No se puede definir esa combinación de opciones.";
+                mensajeEstado.className = "error-box";
+                mensajeEstado.style.display = "block";
+            }
         }
     })
     .catch(err => console.error("Error al procesar opciones:", err));
+}
+
+// Cuánto tiempo se muestra la notificación de subida en la 3ra Sección antes
+// de que el polling normal (actualizarVistaAplicacion) retome el mensaje de
+// control habitual.
+const DURACION_NOTIFICACION_SUBIDA_MS = 4000;
+let notificacionSubidaActiva = false;
+
+// Muestra el resultado de una subida exitosa en la 3ra Sección ("Estado de
+// Combinación") en vez de un alert() bloqueante. Ver el guard
+// `notificacionSubidaActiva` en actualizarVistaAplicacion: sin él, el polling
+// de 2s tapa este mensaje casi de inmediato.
+function mostrarNotificacionSubida(pk, hashGenerado) {
+    notificacionSubidaActiva = true;
+    mensajeEstado.innerText = `¡Éxito! Archivo movido a 'media/'. Registrado en BD con PK: [${pk}] Hash generado a partir de la PK: ${hashGenerado}`;
+    mensajeEstado.className = "success-box";
+    mensajeEstado.style.display = "block";
+
+    setTimeout(() => {
+        notificacionSubidaActiva = false;
+        actualizarVistaAplicacion();
+    }, DURACION_NOTIFICACION_SUBIDA_MS);
 }
 
 function confirmarYEliminar(id, nombre) {
