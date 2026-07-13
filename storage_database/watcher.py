@@ -1,173 +1,70 @@
-body { 
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-    margin: 30px; 
-    background-color: #f5f6f8; 
-    color: #333; 
-}
+"""
+Proceso standalone que observa storage_database/documents_pool/ y mantiene la
+tabla `archivos` sincronizada con lo que realmente existe en disco.
 
-.card-section { 
-    background: white; 
-    padding: 20px; 
-    margin-bottom: 20px; 
-    border-radius: 8px; 
-    box-shadow: 0 2px 5px rgba(0,0,0,0.05); 
-}
+Si un archivo se elimina manualmente (fuera de la app, ej. `rm` o un gestor de
+archivos), su registro correspondiente en catalogo_archivos.db queda huérfano
+-la app no se entera-. Este script revisa periódicamente cada registro y
+borra los que ya no tienen su archivo físico en documents_pool/.
 
-h2 { 
-    margin-top: 0; 
-    color: #2c3e50; 
-    border-bottom: 2px solid #ecf0f1; 
-    padding-bottom: 8px; 
-}
+Uso:
+    venv/bin/python storage_database/watcher.py
+"""
+import functools
+import os
+import sqlite3
+import sys
+import time
 
-.pool-categorias { 
-    display: flex; 
-    gap: 40px; 
-    margin-bottom: 15px; 
-}
+# stdout se bufferea por bloques (no por línea) cuando no es una terminal -p.ej.
+# al redirigir a un archivo de log con `make watch > log.txt`-, así que sin esto
+# los mensajes tardarían en aparecer. Forzamos flush en cada print.
+print = functools.partial(print, flush=True)
 
-.categoria-col { 
-    background: #fafafa; 
-    padding: 15px; 
-    border-radius: 6px; 
-    border: 1px solid #e2e8f0; 
-    min-width: 150px; 
-}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MEDIA_FOLDER = os.path.join(BASE_DIR, "documents_pool")
+DB_PATH = os.path.join(MEDIA_FOLDER, "catalogo_archivos.db")
 
-.opcion-item {
-    background-color: var(--color-posicion, white);
-    padding: 10px;
-    border: 1px solid #e2e8f0;
-    border-radius: 4px;
-    margin: 8px 0;
-    display: flex;
-    align-items: center;
-    justify-content: space-between; /* Deja el ícono a la derecha */
-    gap: 8px;
-    user-select: none;
-    transition: box-shadow 0.2s, background-color 0.2s;
-}
+POLL_INTERVAL_SECONDS = 2
 
-/* Estado visual temporal mientras se arrastra la fila Y */
-.opcion-item.dragging {
-    opacity: 0.5;
-    background-color: #eff6ff;
-    border: 1px dashed #3b82f6;
-    box-shadow: 0 4px 10px rgba(59, 130, 246, 0.15);
-}
 
-/* Indicador visual de arrastre */
-.handle-drag {
-    color: #94a3b8;
-    cursor: grab;
-    font-size: 16px;
-    padding-left: 10px;
-}
+def sincronizar_una_vez(conn):
+    """Elimina de `archivos` cualquier registro cuyo archivo físico ya no exista."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, nombre_original FROM archivos")
+    registros = cursor.fetchall()
 
-.handle-drag:active {
-    cursor: grabbing;
-}
+    eliminados = 0
+    for archivo_id, nombre_original in registros:
+        ruta_fisica = os.path.join(MEDIA_FOLDER, nombre_original)
+        if not os.path.exists(ruta_fisica):
+            cursor.execute("DELETE FROM archivos WHERE id = ?", (archivo_id,))
+            eliminados += 1
+            print(f"[watcher] '{nombre_original}' (id={archivo_id}) ya no está en disco -> registro eliminado de la base de datos.")
 
-.error-box { 
-    background-color: #fde8e8; 
-    border-left: 5px solid #f05252; 
-    color: #9b1c1c; 
-    padding: 12px; 
-    border-radius: 4px; 
-    display: none; 
-    margin-top: 15px; 
-    font-weight: bold; 
-}
+    if eliminados:
+        conn.commit()
 
-.success-box { 
-    background-color: #def7ec; 
-    border-left: 5px solid #31c48d; 
-    color: #03543f; 
-    padding: 12px; 
-    border-radius: 4px; 
-    font-weight: bold; 
-}
+    return eliminados
 
-.file-list { 
-    list-style: none; 
-    padding-left: 0; 
-}
 
-.file-list li { 
-    padding: 10px 14px; 
-    background: #f8fafc; 
-    border: 1px solid #e2e8f0; 
-    margin-bottom: 5px; 
-    border-radius: 4px; 
-    font-size: 14px; 
-    display: flex; 
-    justify-content: space-between; 
-    align-items: center; 
-}
+def main():
+    if not os.path.exists(DB_PATH):
+        print(f"[watcher] No se encontró la base de datos en {DB_PATH}.")
+        print("[watcher] Ejecutá 'make run' al menos una vez para crearla, luego reintentá.")
+        sys.exit(1)
 
-.txt-muted {
-    color: #94a3b8;
-}
+    print(f"[watcher] Observando {MEDIA_FOLDER} cada {POLL_INTERVAL_SECONDS}s (Ctrl+C para detener)...")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        while True:
+            sincronizar_una_vez(conn)
+            time.sleep(POLL_INTERVAL_SECONDS)
+    except KeyboardInterrupt:
+        print("\n[watcher] Detenido.")
+    finally:
+        conn.close()
 
-.badge-info { 
-    font-family: monospace; 
-    background: #e2e8f0; 
-    padding: 3px 8px; 
-    border-radius: 4px; 
-    color: #0f172a; 
-    font-size: 12px; 
-}
 
-.btn-agregar { 
-    background-color: #3b82f6; 
-    color: white; 
-    border: none; 
-    padding: 10px 20px; 
-    font-size: 14px; 
-    border-radius: 6px; 
-    cursor: pointer; 
-    font-weight: bold; 
-    transition: background 0.2s; 
-}
-
-.btn-agregar:hover { 
-    background-color: #2563eb; 
-}
-
-.btn-agregar:disabled { 
-    background-color: #cbd5e1; 
-    cursor: not-allowed; 
-}
-
-/* Ocultar el input file nativo para que se use el botón estilizado */
-#input-archivo-nativo {
-    display: none;
-}
-
-.file-link {
-    color: #2563eb;
-    text-decoration: none;
-    transition: color 0.2s;
-}
-
-.file-link:hover {
-    color: #1d4ed8;
-    text-decoration: underline;
-    cursor: pointer;
-}
-
-.btn-eliminar {
-    background-color: #ef4444;
-    color: white;
-    border: none;
-    padding: 6px 12px;
-    font-size: 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: bold;
-    transition: background 0.2s;
-}
-
-.btn-eliminar:hover {
-    background-color: #dc2626;
-}
+if __name__ == "__main__":
+    main()
