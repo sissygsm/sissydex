@@ -193,6 +193,8 @@ function cargarOpcionesOrdenadas() {
 
                     contenedor.appendChild(item);
                 });
+
+                colorearOpcionesPorPosicion(contenedor);
             });
 
             // Re-vincular los eventos de escucha a los nuevos checkboxes creados dinámicamente
@@ -205,7 +207,29 @@ function cargarOpcionesOrdenadas() {
         });
 }
 
+// Colorea cada opción de una columna según su posición: verde arriba (primero),
+// rojo abajo (último), con una interpolación de tono (hue) entre ambos. Se
+// aplica vía la variable CSS --color-posicion para que la regla .dragging siga
+// pudiendo sobreescribir el color mientras se arrastra un elemento.
+function colorearOpcionesPorPosicion(columna) {
+    const items = [...columna.querySelectorAll('.opcion-item')];
+    const total = items.length;
+
+    items.forEach((item, indice) => {
+        const proporcion = total > 1 ? indice / (total - 1) : 0;
+        const tono = 120 * (1 - proporcion); // 120° = verde, 0° = rojo
+        item.style.setProperty('--color-posicion', `hsl(${tono}, 70%, 88%)`);
+    });
+}
+
 // --- MECANISMO DRAG AND DROP NATIVO DEL NAVEGADOR ---
+// Las opciones solo se pueden reordenar DENTRO de su propia categoría; no está
+// permitido moverlas a otra columna. `columnaOrigenActual` recuerda de qué
+// columna partió el arrastre, para que `dragover` ignore cualquier columna
+// distinta: el elemento nunca se reparenta fuera de su categoría de origen, así
+// que al soltar simplemente permanece donde estaba (sin mensaje de error).
+let columnaOrigenActual = null;
+
 function configurarDragAndDrop() {
     const columnas = document.querySelectorAll('.categoria-col');
 
@@ -213,28 +237,38 @@ function configurarDragAndDrop() {
         col.addEventListener('dragstart', e => {
             if (e.target.classList.contains('opcion-item')) {
                 e.target.classList.add('dragging');
+                columnaOrigenActual = col;
             }
         });
 
         col.addEventListener('dragend', e => {
             if (e.target.classList.contains('opcion-item')) {
                 e.target.classList.remove('dragging');
-                
+
                 // Al terminar el movimiento, guardar la nueva posición en la DB
                 guardarNuevoOrdenFisico(col);
+                columnaOrigenActual = null;
             }
         });
 
         col.addEventListener('dragover', e => {
+            // Ignorar columnas que no son la de origen: no se permite mover
+            // opciones entre categorías, solo reordenarlas dentro de la misma.
+            if (col !== columnaOrigenActual) return;
+
             e.preventDefault(); // Necesario para permitir el Drop
             const elementoArrastrado = document.querySelector('.dragging');
             const itemCercano = obtenerElementoAbajo(col, e.clientY);
-            
+
             if (itemCercano == null) {
                 col.appendChild(elementoArrastrado);
             } else {
                 col.insertBefore(elementoArrastrado, itemCercano);
             }
+
+            // Recalcular los colores en vivo: la posición de varias opciones
+            // pudo cambiar al reacomodarse alrededor del elemento arrastrado.
+            colorearOpcionesPorPosicion(col);
         });
     });
 }
@@ -276,3 +310,11 @@ cargarOpcionesOrdenadas();
 
 // Inicializar la interfaz vacía al cargar la ventana
 actualizarVistaAplicacion();
+
+// Refrescar periódicamente la 1ra Sección (listado de archivos). Un archivo
+// puede eliminarse fuera de la app -ej. borrado manual detectado por
+// storage_database/watcher.py-, lo cual actualiza la base de datos pero no
+// dispara ningún evento en el navegador; sin este refresco, la lista seguiría
+// mostrando el archivo ya eliminado hasta la próxima interacción del usuario.
+const INTERVALO_REFRESCO_MS = 2000;
+setInterval(actualizarVistaAplicacion, INTERVALO_REFRESCO_MS);
