@@ -10,7 +10,7 @@ SEED_SQL_FILE := $(SEED_DIR)/orden_opciones_seed.sql
 WATCHER_SCRIPT := storage_database/watcher.py
 RECONCILE_SCRIPT := storage_database/reconciliar_pool.py
 
-.PHONY: venv install run watch seed apply-seed setup update clean
+.PHONY: venv install run watch seed apply-seed setup update dockerize clean
 
 venv:
 	python3 -m venv $(VENV_DIR)
@@ -36,6 +36,11 @@ setup: install apply-seed
 update:
 	$(PYTHON) $(RECONCILE_SCRIPT)
 
+dockerize:
+	docker compose up -d
+	docker compose ps
+
 clean:
 	rm -rf $(VENV_DIR)
 	find . -type d -name "__pycache__" -exec rm -rf {} +
+	docker compose down
