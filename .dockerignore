@@ -1,0 +1,8 @@
+.git
+__pycache__/
+*.pyc
+.venv
+venv
+
+# Datos de usuario: se montan como volumen en runtime, no se hornean en la imagen
+storage_database/documents_pool/*
