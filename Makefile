@@ -20,7 +20,7 @@ install: venv
 
 run:
 	-kill -9 $$(lsof -t -i:5000) 2>/dev/null
-	$(PYTHON) $(APP_ENTRYPOINT)
+	FLASK_DEBUG=1 $(PYTHON) $(APP_ENTRYPOINT)
 
 watch:
 	$(PYTHON) $(WATCHER_SCRIPT)
