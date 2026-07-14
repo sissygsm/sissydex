@@ -92,6 +92,21 @@ class LogicaNegocioArchivos:
             hash_acumulado ^= xxhash.xxh32(opcion.encode('utf-8')).intdigest()
         return hash_acumulado
 
+    def _separar_prefijo_hash(self, nombre_archivo):
+        """
+        El hash_calculado_hex siempre se genera con f"{...:08x}" (8 caracteres
+        hexadecimales), y ese mismo texto se antepone al nombre físico del
+        archivo (ver procesar_y_guardar_archivo / cambiar_opciones_archivo).
+        Dado un nombre_original ya guardado, separa ese prefijo del nombre
+        base original para poder reconstruir el nombre con un hash nuevo.
+        Si los primeros 8 caracteres no son hexadecimales (archivo subido
+        antes de esta funcionalidad), se asume que no tiene prefijo.
+        """
+        posible_prefijo = nombre_archivo[:8]
+        if len(posible_prefijo) == 8 and all(c in '0123456789abcdefABCDEF' for c in posible_prefijo):
+            return nombre_archivo[8:]
+        return nombre_archivo
+
     def obtener_mapa_orden(self):
         """Retorna el orden actual ordenado de arriba a abajo (Y creciente)"""
         cursor = self.conn.cursor()
@@ -133,6 +148,37 @@ class LogicaNegocioArchivos:
         self.conn.commit()
         cursor.close()
 
+    def agregar_opcion(self, categoria, opcion_id):
+        """
+        Crea una nueva opción al final de una categoría (botón "Agregar" al pie
+        de cada columna en la 2da Sección). posicion_y se calcula como el
+        máximo actual de la categoría + 1, para que quede al final de la lista.
+        opcion_id debe ser único en toda la tabla: actualizar_orden_categoria
+        borra filas por opcion_id sin importar la categoría, así que un id
+        duplicado entre categorías rompería ese guardado de orden.
+        Retorna (True, None) si se creó, o (False, mensaje_error) si no.
+        """
+        if "," in opcion_id:
+            return False, "El nombre de la opción no puede contener comas."
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT 1 FROM orden_opciones WHERE opcion_id = ?", (opcion_id,))
+        if cursor.fetchone():
+            cursor.close()
+            return False, "Ya existe una opción con ese nombre."
+
+        cursor.execute("SELECT COALESCE(MAX(posicion_y), 0) FROM orden_opciones WHERE categoria = ?", (categoria,))
+        siguiente_posicion = cursor.fetchone()[0] + 1
+
+        cursor.execute(
+            "INSERT INTO orden_opciones (categoria, opcion_id, posicion_y) VALUES (?, ?, ?)",
+            (categoria, opcion_id, siguiente_posicion)
+        )
+        self.conn.commit()
+        cursor.close()
+
+        return True, None
+
     def listar_archivos_por_combinacion(self, opciones_seleccionadas):
         """
         Busca y lista los archivos que fueron guardados bajo esta combinación exacta.
@@ -168,16 +214,21 @@ class LogicaNegocioArchivos:
 
     def procesar_y_guardar_archivo(self, archivo_flask, opciones_seleccionadas):
         """
-        1. Guarda el archivo físicamente en media/
+        1. Guarda el archivo físicamente en media/ con su nombre original
         2. Inserta el registro para obtener la PK automáticamente
-        3. Calcula el hash final combinando (PK ^ Hash_Opciones) y actualiza la fila
+        3. Calcula el hash final combinando (PK ^ Hash_Opciones)
+        4. Renombra el archivo físico anteponiendo el hash al nombre original
+           (ej: hash "abc123" + "feele.txt" -> "abc123feele.txt") y guarda ese
+           mismo nombre en `nombre_original`, ya que el resto del código usa
+           esa columna para ubicar el archivo físico en MEDIA_FOLDER.
         """
         # Limpiar el nombre del archivo para evitar problemas de rutas en Windows/Linux
-        nombre_original = secure_filename(archivo_flask.filename)
-        ruta_destino = os.path.join(MEDIA_FOLDER, nombre_original)
-        
-        # Guardar el archivo físicamente en la carpeta media/
-        archivo_flask.save(ruta_destino)
+        nombre_base = secure_filename(archivo_flask.filename)
+        ruta_temporal = os.path.join(MEDIA_FOLDER, nombre_base)
+
+        # Guardar el archivo físicamente en la carpeta media/ con su nombre base
+        # (todavía no se conoce el hash: depende de la PK autoincremental)
+        archivo_flask.save(ruta_temporal)
 
         # Serializar el conjunto de opciones para guardarlo como texto (ej: "Opcion_A,Opcion_B")
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
@@ -186,7 +237,7 @@ class LogicaNegocioArchivos:
         cursor = self.conn.cursor()
         cursor.execute(
             "INSERT INTO archivos (nombre_original, combinacion_opciones) VALUES (?, ?)",
-            (nombre_original, texto_opciones)
+            (nombre_base, texto_opciones)
         )
         pk_generada = cursor.lastrowid  # Obtener la PK generada automáticamente
 
@@ -195,10 +246,15 @@ class LogicaNegocioArchivos:
         hash_final_int = pk_generada ^ hash_opciones_int
         hash_final_hex = f"{hash_final_int:08x}"
 
-        # Actualizar el registro con su Hash definitivo asignado
+        # Renombrar el archivo físico anteponiendo el hash al nombre original
+        nombre_con_hash = f"{hash_final_hex}{nombre_base}"
+        ruta_final = os.path.join(MEDIA_FOLDER, nombre_con_hash)
+        os.rename(ruta_temporal, ruta_final)
+
+        # Actualizar el registro con su Hash definitivo y el nombre físico final
         cursor.execute(
-            "UPDATE archivos SET hash_calculado_hex = ? WHERE id = ?",
-            (hash_final_hex, pk_generada)
+            "UPDATE archivos SET nombre_original = ?, hash_calculado_hex = ? WHERE id = ?",
+            (nombre_con_hash, hash_final_hex, pk_generada)
         )
         self.conn.commit()
         cursor.close()
@@ -231,6 +287,45 @@ class LogicaNegocioArchivos:
         cursor.close()
 
         return nombre_archivo
+
+    def cambiar_opciones_archivo(self, archivo_id, opciones_seleccionadas):
+        """
+        Reasigna la combinación de opciones de un archivo ya subido (botón
+        "Cambiar Opciones" / "Aceptar" en la 1ra Sección). Recalcula el hash
+        igual que en procesar_y_guardar_archivo (PK XOR hash de opciones) y
+        renombra el archivo físico para que su prefijo de hash quede acorde a
+        la nueva combinación, conservando el nombre base original.
+        Retorna el nombre_original (nuevo) si existía, o None si el id no existe.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT nombre_original FROM archivos WHERE id = ?", (archivo_id,))
+        resultado = cursor.fetchone()
+
+        if not resultado:
+            cursor.close()
+            return None
+
+        nombre_actual = resultado[0]
+        nombre_base = self._separar_prefijo_hash(nombre_actual)
+
+        texto_opciones = ",".join(sorted(opciones_seleccionadas))
+        hash_opciones_int = self.calcular_hash_opciones(opciones_seleccionadas)
+        hash_final_hex = f"{(archivo_id ^ hash_opciones_int):08x}"
+        nombre_nuevo = f"{hash_final_hex}{nombre_base}"
+
+        ruta_actual = os.path.join(MEDIA_FOLDER, nombre_actual)
+        ruta_nueva = os.path.join(MEDIA_FOLDER, nombre_nuevo)
+        if os.path.exists(ruta_actual):
+            os.rename(ruta_actual, ruta_nueva)
+
+        cursor.execute(
+            "UPDATE archivos SET nombre_original = ?, combinacion_opciones = ?, hash_calculado_hex = ? WHERE id = ?",
+            (nombre_nuevo, texto_opciones, hash_final_hex, archivo_id)
+        )
+        self.conn.commit()
+        cursor.close()
+
+        return nombre_nuevo
 
     def eliminar_por_nombre(self, nombre_archivo):
         """
@@ -269,6 +364,21 @@ def guardar_orden():
         
     negocio.actualizar_orden_categoria(categoria, lista_opciones)
     return jsonify({"success": True})
+
+@app.route('/api/orden/agregar', methods=['POST'])
+def agregar_opcion():
+    data = request.json or {}
+    categoria = data.get('categoria')
+    opcion_id = (data.get('opcion_id') or '').strip()
+
+    if not categoria or not opcion_id:
+        return jsonify({"success": False, "error": "Categoría u opción faltante"}), 400
+
+    exito, error = negocio.agregar_opcion(categoria, opcion_id)
+    if not exito:
+        return jsonify({"success": False, "error": error}), 400
+
+    return jsonify({"success": True, "opcion_id": opcion_id})
 
 # =====================================================================
 # ENDPOINT PARA RENDERIZAR LA INTERFAZ WEB
@@ -365,7 +475,31 @@ def eliminar_archivo(archivo_id):
 
     except Exception as e:
         return jsonify({"success": False, "error": f"Error al eliminar: {str(e)}"}), 500
-    
+
+# =====================================================================
+# ENDPOINT PARA CAMBIAR LA COMBINACIÓN DE OPCIONES DE UN ARCHIVO YA SUBIDO
+# =====================================================================
+@app.route('/api/archivos/<int:archivo_id>/opciones', methods=['PUT'])
+def cambiar_opciones_archivo(archivo_id):
+    """
+    Reasigna la combinación de opciones de un archivo existente (botón
+    "Cambiar Opciones" -> "Aceptar" de la 1ra Sección). No mueve ni renombra
+    el archivo físico, solo actualiza su fila en `archivos`.
+    """
+    data = request.json or {}
+    opciones = data.get('opciones', [])
+
+    valido, mensaje = negocio.validar_combinacion(opciones)
+    if not valido:
+        return jsonify({"success": False, "error": mensaje}), 400
+
+    nombre_archivo = negocio.cambiar_opciones_archivo(archivo_id, opciones)
+
+    if nombre_archivo is None:
+        return jsonify({"success": False, "error": "El archivo no existe en la base de datos."}), 404
+
+    return jsonify({"success": True, "nombre": nombre_archivo})
+
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
