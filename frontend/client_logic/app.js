@@ -7,6 +7,13 @@ const listaArchivos = document.getElementById('lista-archivos');
 const motivoError = document.getElementById('motivo-error');
 const mensajeEstado = document.getElementById('estado-mensaje');
 
+// Estado del modo "Cambiar Opciones": mientras hay un archivo en edición,
+// actualizarVistaAplicacion() no debe reconstruir la 1ra Sección (perdería el
+// botón "Aceptar" y el bloqueo de los demás controles) ni ante el polling de
+// 2s ni ante los cambios de checkbox que el propio usuario hace para elegir
+// la nueva combinación.
+let modoEdicionOpciones = { activo: false, archivoId: null };
+
 // Diccionario con los textos amigables que el usuario final debe leer en los controles.
 // PENDIENTE: tras el nuevo seed de orden_opciones (Grupo_c, Grupo_e, Grupo_g, Grupo_i,
 // Grupo_l, Grupo_n) los códigos antiguos (Opcion_Free, Region_LATAM, etc.) ya no existen.
@@ -75,6 +82,12 @@ function obtenerOpcionesSeleccionadas() {
 
 // Sincroniza el estado de las 4 secciones consultando al Backend
 function actualizarVistaAplicacion() {
+    // Mientras el usuario está eligiendo la nueva combinación para un archivo
+    // (botón "Cambiar Opciones" -> "Aceptar"), no se refresca nada: ni el
+    // polling de 2s ni los propios cambios de checkbox del usuario deben
+    // reconstruir la 1ra Sección hasta que confirme con "Aceptar".
+    if (modoEdicionOpciones.activo) return;
+
     const opciones = obtenerOpcionesSeleccionadas();
 
     fetch('/api/procesar', {
@@ -108,6 +121,7 @@ function actualizarVistaAplicacion() {
                         <div style="display: flex; align-items: center; gap: 10px;">
                             <span class="badge-info">PK: ${file.id}</span>
                             <span class="badge-info" style="background:#bfdbfe;">Hash: ${file.hash}</span>
+                            <button class="btn-cambiar-opciones" onclick="iniciarCambioOpciones(${file.id}, this)">Cambiar Opciones</button>
                             <button class="btn-eliminar" onclick="confirmarYEliminar(${file.id}, '${file.nombre}')">Eliminar</button>
                         </div>
                     </li>`;
@@ -189,6 +203,46 @@ function confirmarYEliminar(id, nombre) {
     .catch(err => console.error("Error de red:", err));
 }
 
+// Entra en modo edición para el archivo indicado: el botón que disparó el
+// clic pasa a decir "Aceptar" y se bloquean el resto de los controles
+// (AGREGAR ARCHIVO, "Eliminar" y "Cambiar Opciones" de los demás archivos)
+// hasta que el usuario confirme la nueva combinación.
+function iniciarCambioOpciones(id, boton) {
+    modoEdicionOpciones = { activo: true, archivoId: id };
+
+    btnSubir.disabled = true;
+    document.querySelectorAll('.btn-eliminar, .btn-cambiar-opciones').forEach(otroBoton => {
+        if (otroBoton !== boton) otroBoton.disabled = true;
+    });
+
+    boton.innerText = 'Aceptar';
+    boton.onclick = () => confirmarCambioOpciones(id, boton);
+}
+
+// Envía la combinación de checkboxes actualmente marcada como la nueva
+// combinación del archivo, y sale del modo edición (con éxito o sin él, para
+// no dejar la interfaz bloqueada ante un error de red).
+function confirmarCambioOpciones(id, boton) {
+    const nuevasOpciones = obtenerOpcionesSeleccionadas();
+
+    fetch(`/api/archivos/${id}/opciones`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opciones: nuevasOpciones })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (!data.success) {
+            alert(`Error al cambiar las opciones: ${data.error}`);
+        }
+    })
+    .catch(err => console.error("Error de red:", err))
+    .finally(() => {
+        modoEdicionOpciones = { activo: false, archivoId: null };
+        actualizarVistaAplicacion();
+    });
+}
+
 // --- FUNCIÓN PARA CARGAR Y CONSTRUIR LAS OPCIONES EN SU ORDEN PERSISTENTE ---
 function cargarOpcionesOrdenadas() {
     fetch('/api/orden')
@@ -224,6 +278,7 @@ function cargarOpcionesOrdenadas() {
                 });
 
                 colorearOpcionesPorPosicion(contenedor);
+                agregarControlNuevaOpcion(contenedor, cat);
             });
 
             // Re-vincular los eventos de escucha a los nuevos checkboxes creados dinámicamente
@@ -249,6 +304,56 @@ function colorearOpcionesPorPosicion(columna) {
         const tono = 120 * (1 - proporcion); // 120° = verde, 0° = rojo
         item.style.setProperty('--color-posicion', `hsl(${tono}, 70%, 88%)`);
     });
+}
+
+// Agrega al final de la columna el control para crear opciones nuevas: un
+// botón "Agregar" que, al hacer clic, se reemplaza a sí mismo por un campo de
+// texto. Al escribir el nombre y presionar Enter se crea la opción y toda la
+// columna se recarga (cargarOpcionesOrdenadas), lo que naturalmente deja la
+// opción nueva en la lista seguida otra vez del botón "Agregar" al final.
+function agregarControlNuevaOpcion(contenedor, categoria) {
+    const boton = document.createElement('button');
+    boton.type = 'button';
+    boton.className = 'btn-agregar-opcion';
+    boton.innerText = 'Agregar';
+
+    boton.addEventListener('click', () => {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'input-nueva-opcion';
+        input.placeholder = 'Nombre de la opción...';
+
+        input.addEventListener('keydown', e => {
+            if (e.key !== 'Enter') return;
+            const opcionId = input.value.trim();
+            if (!opcionId) return;
+            crearNuevaOpcion(categoria, opcionId);
+        });
+
+        boton.replaceWith(input);
+        input.focus();
+    });
+
+    contenedor.appendChild(boton);
+}
+
+// Envía la nueva opción al backend; si se creó, recarga la interfaz de
+// opciones completa para reflejarla en su columna.
+function crearNuevaOpcion(categoria, opcionId) {
+    fetch('/api/orden/agregar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoria: categoria, opcion_id: opcionId })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (!data.success) {
+            alert(`No se pudo agregar la opción: ${data.error}`);
+            return;
+        }
+        cargarOpcionesOrdenadas();
+    })
+    .catch(err => console.error("Error de red:", err));
 }
 
 // --- MECANISMO DRAG AND DROP NATIVO DEL NAVEGADOR ---
