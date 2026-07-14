@@ -8,8 +8,9 @@ SEED_DIR := storage_database/seeds
 SEED_GENERATOR := $(SEED_DIR)/generate_orden_opciones_sql.py
 SEED_SQL_FILE := $(SEED_DIR)/orden_opciones_seed.sql
 WATCHER_SCRIPT := storage_database/watcher.py
+RECONCILE_SCRIPT := storage_database/reconciliar_pool.py
 
-.PHONY: venv install run watch seed apply-seed setup clean
+.PHONY: venv install run watch seed apply-seed setup update clean
 
 venv:
 	python3 -m venv $(VENV_DIR)
@@ -31,6 +32,9 @@ apply-seed:
 	$(PYTHON) -c "import sqlite3; sqlite3.connect('$(DATABASE_FILE)').executescript(open('$(SEED_SQL_FILE)').read())"
 
 setup: install apply-seed
+
+update:
+	$(PYTHON) $(RECONCILE_SCRIPT)
 
 clean:
 	rm -rf $(VENV_DIR)
