@@ -1,0 +1,12 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production # O la variable de entorno que use tu framework
+    volumes:
+      # Persistir la BD y los archivos subidos fuera del ciclo de vida del contenedor
+      - ./storage_database/documents_pool:/app/storage_database/documents_pool
