@@ -3,7 +3,13 @@ import sqlite3
 import xxhash
 from flask import Flask, jsonify, request, render_template, send_from_directory
 from markupsafe import escape
-from werkzeug.utils import secure_filename
+from werkzeug.utils import secure_filename, safe_join
+
+# El modo debug del servidor de desarrollo de Werkzeug expone un debugger
+# interactivo que permite ejecutar código arbitrario si queda accesible
+# públicamente, así que solo se habilita explícitamente vía variable de
+# entorno (ver `make run`), nunca por defecto.
+DEBUG_MODE = os.environ.get("FLASK_DEBUG", "0") == "1"
 
 # Raíz del proyecto (dos niveles arriba de backend/services/)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -438,9 +444,11 @@ def servir_archivo_multimedia(filename):
     Flask detectará automáticamente el tipo (mp3, mp4, png, txt) para que
     el navegador lo reproduzca en lugar de descargarlo de golpe.
     """
-    ruta_fisica = os.path.join(MEDIA_FOLDER, filename)
+    # safe_join devuelve None si filename intenta escapar de MEDIA_FOLDER
+    # (p. ej. vía secuencias "../"), en vez de construir la ruta a ciegas.
+    ruta_fisica = safe_join(MEDIA_FOLDER, filename)
 
-    if not os.path.isfile(ruta_fisica):
+    if ruta_fisica is None or not os.path.isfile(ruta_fisica):
         # El archivo ya no existe en disco (borrado manual, por el watcher, o
         # la ventana de espera antes de que cualquiera de los dos actualice la
         # BD). Autosanar cualquier registro huérfano que aún lo referencie, y
@@ -473,8 +481,12 @@ def eliminar_archivo(archivo_id):
 
         return jsonify({"success": True, "mensaje": "Archivo eliminado correctamente."})
 
-    except Exception as e:
-        return jsonify({"success": False, "error": f"Error al eliminar: {str(e)}"}), 500
+    except Exception:
+        # No devolver el detalle de la excepción al cliente: podría revelar
+        # rutas del servidor u otra información interna. El stack trace queda
+        # solo en el log del servidor.
+        app.logger.exception("Error al eliminar archivo id=%s", archivo_id)
+        return jsonify({"success": False, "error": "Error al eliminar el archivo."}), 500
 
 # =====================================================================
 # ENDPOINT PARA CAMBIAR LA COMBINACIÓN DE OPCIONES DE UN ARCHIVO YA SUBIDO
@@ -502,4 +514,4 @@ def cambiar_opciones_archivo(archivo_id):
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=DEBUG_MODE)
