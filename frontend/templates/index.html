@@ -23,41 +23,11 @@
     <!-- 2da Sección: Pool de Categorías y Mensajes de Exclusión de Negocio -->
     <section class="card-section">
         <h2>2da Sección: Pool de Categorías y Opciones Reordenables</h2>
-        <div class="pool-categorias">
-
-            <!-- Categoría Grupo_c (Columna X) -->
-            <div class="categoria-col" id="col-Grupo_c" data-categoria="Grupo_c">
-                <h3>Grupo_c</h3>
-                <!-- El JS inyectará aquí las opciones ordenadas según la base de datos -->
-            </div>
-
-            <!-- Categoría Grupo_e (Columna X) -->
-            <div class="categoria-col" id="col-Grupo_e" data-categoria="Grupo_e">
-                <h3>Grupo_e</h3>
-            </div>
-
-            <!-- Categoría Grupo_g (Columna X) -->
-            <div class="categoria-col" id="col-Grupo_g" data-categoria="Grupo_g">
-                <h3>Grupo_g</h3>
-            </div>
-
-            <!-- Categoría Grupo_i (Columna X) -->
-            <div class="categoria-col" id="col-Grupo_i" data-categoria="Grupo_i">
-                <h3>Grupo_i</h3>
-                <!-- El JS inyectará aquí las opciones ordenadas según la base de datos -->
-            </div>
-
-            <!-- Categoría Grupo_l (Columna X) -->
-            <div class="categoria-col" id="col-Grupo_l" data-categoria="Grupo_l">
-                <h3>Grupo_l</h3>
-            </div>
-
-            <!-- Categoría Grupo_n (Columna X) -->
-            <div class="categoria-col" id="col-Grupo_n" data-categoria="Grupo_n">
-                <h3>Grupo_n</h3>
-            </div>
-
-        </div>
+        <!-- Las columnas .categoria-col se generan dinámicamente en app.js
+             (cargarOpcionesOrdenadas) a partir de GET /api/orden: una por cada
+             categoría presente en la tabla orden_opciones. No hace falta tocar
+             este HTML cuando cambian las categorías del seed/CSV. -->
+        <div class="pool-categorias" id="pool-categorias"></div>
         <div id="motivo-error" class="error-box"></div>
     </section>
 
