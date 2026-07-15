@@ -244,15 +244,35 @@ function confirmarCambioOpciones(id, boton) {
 }
 
 // --- FUNCIÓN PARA CARGAR Y CONSTRUIR LAS OPCIONES EN SU ORDEN PERSISTENTE ---
+// Las columnas de categoría (.categoria-col) ya no están hardcodeadas en el
+// HTML: se crean aquí, una por cada categoría que devuelva GET /api/orden, y
+// se agregan a #pool-categorias. Así el HTML deja de ser una fuente de verdad
+// paralela - la cadena real es CSV -> seed SQL -> BD -> este fetch, y agregar
+// o renombrar una categoría en el CSV/BD no requiere tocar el HTML.
 function cargarOpcionesOrdenadas() {
+    const poolCategorias = document.getElementById('pool-categorias');
+
     fetch('/api/orden')
         .then(res => res.json())
         .then(mapaOrden => {
             // Iterar sobre cada categoría devuelta por la BD (Suscripcion, Region, TipoDatos)
             Object.keys(mapaOrden).forEach(cat => {
-                const contenedor = document.getElementById(`col-${cat}`);
-                if (!contenedor) return;
-                
+                let contenedor = document.getElementById(`col-${cat}`);
+
+                if (!contenedor) {
+                    // Primera vez que se ve esta categoría: crear su columna
+                    contenedor = document.createElement('div');
+                    contenedor.className = 'categoria-col';
+                    contenedor.id = `col-${cat}`;
+                    contenedor.setAttribute('data-categoria', cat);
+
+                    const h3 = document.createElement('h3');
+                    h3.innerText = cat;
+                    contenedor.appendChild(h3);
+
+                    poolCategorias.appendChild(contenedor);
+                }
+
                 // Conservar solo el encabezado H3
                 const h3 = contenedor.querySelector('h3');
                 contenedor.innerHTML = '';
@@ -279,6 +299,13 @@ function cargarOpcionesOrdenadas() {
 
                 colorearOpcionesPorPosicion(contenedor);
                 agregarControlNuevaOpcion(contenedor, cat);
+            });
+
+            // Quitar columnas de categorías que ya no existen en la BD (p. ej.
+            // tras reseedear con un CSV que renombró o eliminó una categoría)
+            document.querySelectorAll('.categoria-col').forEach(col => {
+                const cat = col.getAttribute('data-categoria');
+                if (!(cat in mapaOrden)) col.remove();
             });
 
             // Re-vincular los eventos de escucha a los nuevos checkboxes creados dinámicamente
