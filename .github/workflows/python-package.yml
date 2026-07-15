@@ -1,6 +1,5 @@
 # This workflow installs the app via the project Makefile, lints with flake8,
-# and runs pytest (tolerating the "no tests collected" exit code until a
-# test suite exists — see CLAUDE.md).
+# and runs pytest against tests/ (see CLAUDE.md).
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
 
 name: Python package
@@ -38,5 +37,4 @@ jobs:
         venv/bin/flake8 . --count --exclude=venv --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
-        # exit code 5 = no tests collected; tolerate it until the repo has a test suite
-        venv/bin/pytest || [ $? -eq 5 ]
+        venv/bin/pytest tests/
