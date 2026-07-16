@@ -40,7 +40,8 @@ def sincronizar_una_vez(conn):
         if not os.path.exists(ruta_fisica):
             cursor.execute("DELETE FROM archivos WHERE id = ?", (archivo_id,))
             eliminados += 1
-            print(f"[watcher] '{nombre_original}' (id={archivo_id}) ya no está en disco -> registro eliminado de la base de datos.")
+            print(f"[watcher] '{nombre_original}' (id={archivo_id}) ya no está en disco "
+                  "-> registro eliminado de la base de datos.")
 
     if eliminados:
         conn.commit()
