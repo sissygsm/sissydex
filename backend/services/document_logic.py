@@ -1,9 +1,22 @@
 import os
+import sys
 import sqlite3
 import xxhash
 from flask import Flask, jsonify, request, render_template, send_from_directory
 from markupsafe import escape
 from werkzeug.utils import secure_filename, safe_join
+
+# storage.py y repositorio.py son módulos hermanos sin paquete formal (sin
+# __init__.py). Este archivo se invoca de dos formas distintas -directo
+# (`make run` -> sys.path[0] ya es este directorio) y como `services.
+# document_logic` importado desde backend/app.py (usado por el CMD del
+# Dockerfile -> sys.path[0] es backend/, no backend/services/)-, así que se
+# fija este directorio en sys.path explícitamente para que los imports de
+# abajo resuelvan igual en ambos casos.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from storage import EstrategiaAlmacenamiento, AlmacenamientoLocal  # noqa: E402
+from repositorio import RepositorioArchivos, RepositorioOrdenOpciones  # noqa: E402
 
 # El modo debug del servidor de desarrollo de Werkzeug expone un debugger
 # interactivo que permite ejecutar código arbitrario si queda accesible
@@ -33,32 +46,21 @@ def static_app_js():
     return send_from_directory(CLIENT_LOGIC_DIR, 'app.js')
 
 class LogicaNegocioArchivos:
-    def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    def __init__(self, conn=None, almacenamiento: EstrategiaAlmacenamiento = None):
+        # conn/almacenamiento son inyectables (Strategy + Repository via
+        # Dependency Inversion) para poder testear con una BD/carpeta
+        # temporales; por defecto usan la BD y el storage reales del
+        # proyecto, igual que antes de este refactor.
+        self.conn = conn if conn is not None else sqlite3.connect(DB_PATH, check_same_thread=False)
+        self.almacenamiento = almacenamiento if almacenamiento is not None else AlmacenamientoLocal(MEDIA_FOLDER)
+        self.repo_archivos = RepositorioArchivos(self.conn)
+        self.repo_orden = RepositorioOrdenOpciones(self.conn)
         self._inicializar_db()
 
     def _inicializar_db(self):
-        # 1. Tabla de archivos existente
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS archivos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nombre_original TEXT NOT NULL,
-                combinacion_opciones TEXT NOT NULL,
-                hash_calculado_hex TEXT
-            )
-        ''')
-        
-        # 2. NUEVA TABLA: Almacena de forma persistente la matriz visual (X, Y) de cada opción
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS orden_opciones (
-                categoria TEXT NOT NULL,
-                opcion_id TEXT NOT NULL,
-                posicion_y INTEGER NOT NULL,
-                PRIMARY KEY (categoria, opcion_id)
-            )
-        ''')
-        
+        self.repo_archivos.crear_tabla_si_no_existe()
+        self.repo_orden.crear_tabla_si_no_existe()
+
         # Si la tabla quedó vacía (BD nueva o borrada a mano), autopoblarla desde
         # el seed ya generado y versionado en git (storage_database/seeds/
         # orden_opciones_seed.sql), ejecutado acá con sqlite3 de Python -sin
@@ -67,18 +69,14 @@ class LogicaNegocioArchivos:
         # siendo el CSV (storage_database/seeds/orden_opciones.csv); NO se
         # hardcodea ninguna copia de esos datos acá, para evitar que este fallback
         # vuelva a divergir del CSV como pasaba antes.
-        cursor.execute("SELECT COUNT(*) FROM orden_opciones")
-        if cursor.fetchone()[0] == 0:
+        if self.repo_orden.contar_filas() == 0:
             if os.path.exists(SEED_SQL_PATH):
                 with open(SEED_SQL_PATH, "r", encoding="utf-8") as f:
-                    self.conn.executescript(f.read())
+                    self.repo_orden.cargar_seed(f.read())
             else:
                 print(f"[document_logic] Aviso: no se encontró {SEED_SQL_PATH}; "
                       "orden_opciones queda vacía. Corré 'make seed' para generarlo "
                       "a partir de orden_opciones.csv.")
-
-        self.conn.commit()
-        cursor.close()
 
     def validar_combinacion(self, opciones_seleccionadas):
         """
@@ -115,44 +113,20 @@ class LogicaNegocioArchivos:
 
     def obtener_mapa_orden(self):
         """Retorna el orden actual ordenado de arriba a abajo (Y creciente)"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT categoria, opcion_id, posicion_y FROM orden_opciones ORDER BY categoria, posicion_y ASC")
-        filas = cursor.fetchall()
-
-        # Estructurar dinámicamente como un diccionario de categorías: ya no se
-        # asume una lista fija (Suscripcion/Region/TipoDatos), sino que se toman
-        # las categorías tal cual existen en la tabla (p. ej. Grupo_c, Grupo_e...)
-        mapa = {}
-        for cat, op_id, pos in filas:
-            mapa.setdefault(cat, []).append(op_id)
-        
-        cursor.close()
-        return mapa
+        return self.repo_orden.obtener_mapa()
 
     def actualizar_orden_categoria(self, categoria, lista_opciones):
-        """Actualiza en bloque las posiciones Y para una categoría específica"""
-        cursor = self.conn.cursor()
-
-        # Eliminar cualquier fila previa de estas opciones sin importar en qué
-        # categoría estuvieran antes. El drag-and-drop nativo reparenta el elemento
-        # arrastrado al soltar, así que "dragend" solo dispara el guardado en la
-        # columna DESTINO — la columna ORIGEN nunca recibe su propio guardado. Si
-        # solo borráramos por `categoria`, la fila vieja en la categoría de origen
-        # quedaría huérfana y la opción aparecería duplicada en dos categorías tras
-        # recargar la página.
-        cursor.executemany(
-            "DELETE FROM orden_opciones WHERE opcion_id = ?",
-            [(opcion_id,) for opcion_id in lista_opciones]
-        )
-
-        # Insertar las nuevas posiciones Y correlativas (1, 2, 3...)
-        for indice, opcion_id in enumerate(lista_opciones, start=1):
-            cursor.execute(
-                "INSERT INTO orden_opciones (categoria, opcion_id, posicion_y) VALUES (?, ?, ?)",
-                (categoria, opcion_id, indice)
-            )
-        self.conn.commit()
-        cursor.close()
+        """
+        Actualiza en bloque las posiciones Y para una categoría específica.
+        El repositorio borra por opcion_id sin importar la categoría (no solo
+        por `categoria`): el drag-and-drop nativo reparenta el elemento
+        arrastrado al soltar, así que "dragend" solo dispara el guardado en la
+        columna DESTINO — la columna ORIGEN nunca recibe su propio guardado. Si
+        solo borráramos por `categoria`, la fila vieja en la categoría de origen
+        quedaría huérfana y la opción aparecería duplicada en dos categorías tras
+        recargar la página.
+        """
+        self.repo_orden.reordenar_categoria(categoria, lista_opciones)
 
     def agregar_opcion(self, categoria, opcion_id):
         """
@@ -167,21 +141,11 @@ class LogicaNegocioArchivos:
         if "," in opcion_id:
             return False, "El nombre de la opción no puede contener comas."
 
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT 1 FROM orden_opciones WHERE opcion_id = ?", (opcion_id,))
-        if cursor.fetchone():
-            cursor.close()
+        if self.repo_orden.existe_opcion_id(opcion_id):
             return False, "Ya existe una opción con ese nombre."
 
-        cursor.execute("SELECT COALESCE(MAX(posicion_y), 0) FROM orden_opciones WHERE categoria = ?", (categoria,))
-        siguiente_posicion = cursor.fetchone()[0] + 1
-
-        cursor.execute(
-            "INSERT INTO orden_opciones (categoria, opcion_id, posicion_y) VALUES (?, ?, ?)",
-            (categoria, opcion_id, siguiente_posicion)
-        )
-        self.conn.commit()
-        cursor.close()
+        siguiente_posicion = self.repo_orden.obtener_siguiente_posicion(categoria)
+        self.repo_orden.insertar(categoria, opcion_id, siguiente_posicion)
 
         return True, None
 
@@ -196,26 +160,18 @@ class LogicaNegocioArchivos:
         `make watch` en un proceso aparte-.
         """
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT id, nombre_original, hash_calculado_hex FROM archivos WHERE combinacion_opciones = ?",
-            (texto_opciones,)
-        )
-        filas = cursor.fetchall()
+        filas = self.repo_archivos.buscar_por_combinacion(texto_opciones)
 
         archivos_listados = []
         ids_huerfanos = []
         for archivo_id, nombre_original, hash_calculado_hex in filas:
-            if os.path.exists(os.path.join(MEDIA_FOLDER, nombre_original)):
+            if self.almacenamiento.existe(nombre_original):
                 archivos_listados.append({"id": archivo_id, "nombre": nombre_original, "hash": hash_calculado_hex})
             else:
                 ids_huerfanos.append(archivo_id)
 
-        if ids_huerfanos:
-            cursor.executemany("DELETE FROM archivos WHERE id = ?", [(i,) for i in ids_huerfanos])
-            self.conn.commit()
+        self.repo_archivos.eliminar_por_ids(ids_huerfanos)
 
-        cursor.close()
         return archivos_listados
 
     def procesar_y_guardar_archivo(self, archivo_flask, opciones_seleccionadas):
@@ -226,26 +182,20 @@ class LogicaNegocioArchivos:
         4. Renombra el archivo físico anteponiendo el hash al nombre original
            (ej: hash "abc123" + "feele.txt" -> "abc123feele.txt") y guarda ese
            mismo nombre en `nombre_original`, ya que el resto del código usa
-           esa columna para ubicar el archivo físico en MEDIA_FOLDER.
+           esa columna para ubicar el archivo físico a través de self.almacenamiento.
         """
         # Limpiar el nombre del archivo para evitar problemas de rutas en Windows/Linux
         nombre_base = secure_filename(archivo_flask.filename)
-        ruta_temporal = os.path.join(MEDIA_FOLDER, nombre_base)
 
-        # Guardar el archivo físicamente en la carpeta media/ con su nombre base
-        # (todavía no se conoce el hash: depende de la PK autoincremental)
-        archivo_flask.save(ruta_temporal)
+        # Guardar el archivo físicamente con su nombre base (todavía no se
+        # conoce el hash: depende de la PK autoincremental)
+        self.almacenamiento.guardar(nombre_base, archivo_flask)
 
         # Serializar el conjunto de opciones para guardarlo como texto (ej: "Opcion_A,Opcion_B")
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
 
         # Registrar inicialmente el archivo para detonar el AUTOINCREMENT (PK)
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO archivos (nombre_original, combinacion_opciones) VALUES (?, ?)",
-            (nombre_base, texto_opciones)
-        )
-        pk_generada = cursor.lastrowid  # Obtener la PK generada automáticamente
+        pk_generada = self.repo_archivos.insertar_inicial(nombre_base, texto_opciones)
 
         # Calcular el hash definitivo: Operación XOR entre la PK (int) y el Hash de Opciones (int)
         hash_opciones_int = self.calcular_hash_opciones(opciones_seleccionadas)
@@ -254,16 +204,10 @@ class LogicaNegocioArchivos:
 
         # Renombrar el archivo físico anteponiendo el hash al nombre original
         nombre_con_hash = f"{hash_final_hex}{nombre_base}"
-        ruta_final = os.path.join(MEDIA_FOLDER, nombre_con_hash)
-        os.rename(ruta_temporal, ruta_final)
+        self.almacenamiento.renombrar(nombre_base, nombre_con_hash)
 
         # Actualizar el registro con su Hash definitivo y el nombre físico final
-        cursor.execute(
-            "UPDATE archivos SET nombre_original = ?, hash_calculado_hex = ? WHERE id = ?",
-            (nombre_con_hash, hash_final_hex, pk_generada)
-        )
-        self.conn.commit()
-        cursor.close()
+        self.repo_archivos.actualizar_nombre_y_hash(pk_generada, nombre_con_hash, hash_final_hex)
 
         return pk_generada, hash_final_hex
 
@@ -273,24 +217,13 @@ class LogicaNegocioArchivos:
         y elimina el registro de la base de datos.
         Retorna el nombre_original si se eliminó, o None si el id no existe.
         """
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT nombre_original FROM archivos WHERE id = ?", (archivo_id,))
-        resultado = cursor.fetchone()
-
-        if not resultado:
-            cursor.close()
+        nombre_archivo = self.repo_archivos.obtener_nombre_por_id(archivo_id)
+        if nombre_archivo is None:
             return None
 
-        nombre_archivo = resultado[0]
-        ruta_fisica = os.path.join(MEDIA_FOLDER, nombre_archivo)
-
-        # Eliminar el archivo físico solo si sigue presente en disco
-        if os.path.exists(ruta_fisica):
-            os.remove(ruta_fisica)
-
-        cursor.execute("DELETE FROM archivos WHERE id = ?", (archivo_id,))
-        self.conn.commit()
-        cursor.close()
+        # eliminar() no falla si el archivo ya no está presente en disco.
+        self.almacenamiento.eliminar(nombre_archivo)
+        self.repo_archivos.eliminar_por_id(archivo_id)
 
         return nombre_archivo
 
@@ -303,15 +236,10 @@ class LogicaNegocioArchivos:
         la nueva combinación, conservando el nombre base original.
         Retorna el nombre_original (nuevo) si existía, o None si el id no existe.
         """
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT nombre_original FROM archivos WHERE id = ?", (archivo_id,))
-        resultado = cursor.fetchone()
-
-        if not resultado:
-            cursor.close()
+        nombre_actual = self.repo_archivos.obtener_nombre_por_id(archivo_id)
+        if nombre_actual is None:
             return None
 
-        nombre_actual = resultado[0]
         nombre_base = self._separar_prefijo_hash(nombre_actual)
 
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
@@ -319,17 +247,9 @@ class LogicaNegocioArchivos:
         hash_final_hex = f"{(archivo_id ^ hash_opciones_int):08x}"
         nombre_nuevo = f"{hash_final_hex}{nombre_base}"
 
-        ruta_actual = os.path.join(MEDIA_FOLDER, nombre_actual)
-        ruta_nueva = os.path.join(MEDIA_FOLDER, nombre_nuevo)
-        if os.path.exists(ruta_actual):
-            os.rename(ruta_actual, ruta_nueva)
-
-        cursor.execute(
-            "UPDATE archivos SET nombre_original = ?, combinacion_opciones = ?, hash_calculado_hex = ? WHERE id = ?",
-            (nombre_nuevo, texto_opciones, hash_final_hex, archivo_id)
-        )
-        self.conn.commit()
-        cursor.close()
+        # renombrar() no falla si el archivo ya no está presente en disco.
+        self.almacenamiento.renombrar(nombre_actual, nombre_nuevo)
+        self.repo_archivos.actualizar_combinacion(archivo_id, nombre_nuevo, texto_opciones, hash_final_hex)
 
         return nombre_nuevo
 
@@ -342,12 +262,7 @@ class LogicaNegocioArchivos:
         para que ese registro deje de aparecer en el listado desde ya, en vez
         de depender únicamente de que storage_database/watcher.py esté corriendo.
         """
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM archivos WHERE nombre_original = ?", (nombre_archivo,))
-        eliminados = cursor.rowcount
-        self.conn.commit()
-        cursor.close()
-        return eliminados
+        return self.repo_archivos.eliminar_por_nombre(nombre_archivo)
 
 
 negocio = LogicaNegocioArchivos()
