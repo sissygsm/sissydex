@@ -1,0 +1,43 @@
+# Marks issues and PRs with no recent activity as stale, and closes them if
+# they stay inactive afterward. See: https://github.com/actions/stale
+name: Mark stale issues and pull requests
+
+on:
+  schedule:
+    # Off-hour cron minute (1:37 AM) on purpose: avoids the top of the hour,
+    # when the most scheduled GitHub Actions workflows fire at once.
+    - cron: '37 1 * * *'
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/stale@v10
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+          days-before-stale: 60
+          days-before-close: 7
+
+          stale-issue-label: 'no-activity'
+          stale-pr-label: 'no-activity'
+
+          stale-issue-message: >
+            This issue has had no activity in the last 60 days and has been
+            marked as stale. It will be closed automatically in 7 days if
+            there's no further activity. If it's still relevant, comment or
+            remove the `no-activity` label to keep it open.
+          stale-pr-message: >
+            This pull request has had no activity in the last 60 days and
+            has been marked as stale. It will be closed automatically in 7
+            days if there's no further activity. If it's still in progress,
+            comment or remove the `no-activity` label to keep it open.
+
+          # Never mark anything explicitly flagged as important as stale,
+          # no matter how long it's gone without activity.
+          exempt-issue-labels: 'pinned,security'
+          exempt-pr-labels: 'pinned,security'
