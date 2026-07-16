@@ -105,7 +105,8 @@ class AlmacenamientoS3(EstrategiaAlmacenamiento):
         self._s3.delete_object(Bucket=self._bucket, Key=identificador)
 
     def existe(self, identificador: str) -> bool:
-        from botocore.exceptions import ClientError  # boto3 siempre trae botocore; import perezoso igual, ver docstring de clase
+        # boto3 siempre trae botocore; import perezoso igual, ver docstring de clase.
+        from botocore.exceptions import ClientError
 
         try:
             self._s3.head_object(Bucket=self._bucket, Key=identificador)
