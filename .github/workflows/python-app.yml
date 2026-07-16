@@ -1,0 +1,41 @@
+name: Python package
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v7 # Mantenemos v7 para evitar advertencias de deprecación
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v6 # Mantenemos v6
+      with:
+        python-version: "3.11"
+        cache: 'pip' # <-- LA MEJORA ADOPTADA: Activa la caché nativa de GitHub
+        cache-dependency-path: 'backend/requirements.txt' # Monitorea tu archivo de dependencias
+
+    - name: Install dependencies with Makefile
+      run: |
+        make install
+
+    - name: Install lint/test tools
+      run: |
+        venv/bin/pip install flake8 pytest
+
+    - name: Lint with flake8
+      run: |
+        venv/bin/flake8 . --count --exclude=venv --select=E9,F63,F7,F82 --show-source --statistics
+        venv/bin/flake8 . --count --exclude=venv --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Test with pytest
+      run: |
+        venv/bin/pytest tests/ -v
