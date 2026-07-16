@@ -45,6 +45,7 @@ def static_app_js():
     """app.js vive en frontend/client_logic, fuera de la carpeta static_folder."""
     return send_from_directory(CLIENT_LOGIC_DIR, 'app.js')
 
+
 class LogicaNegocioArchivos:
     def __init__(self, conn=None, almacenamiento: EstrategiaAlmacenamiento = None):
         # conn/almacenamiento son inyectables (Strategy + Repository via
@@ -88,7 +89,7 @@ class LogicaNegocioArchivos:
         las reglas de negocio correspondientes.
         """
         return True, "Combinación totalmente válida."
-    
+
     def calcular_hash_opciones(self, opciones_seleccionadas):
         """Genera el hash base del conjunto de opciones usando XOR."""
         hash_acumulado = 0
@@ -270,21 +271,25 @@ negocio = LogicaNegocioArchivos()
 # =====================================================================
 # ENDPOINTS PARA EL ORDENAMIENTO VISUAL PERSISTENTE
 # =====================================================================
+
+
 @app.route('/api/orden', methods=['GET'])
 def obtener_orden():
     return jsonify(negocio.obtener_mapa_orden())
+
 
 @app.route('/api/orden/guardar', methods=['POST'])
 def guardar_orden():
     data = request.json or {}
     categoria = data.get('categoria')
     lista_opciones = data.get('opciones', [])
-    
+
     if not categoria:
         return jsonify({"success": False, "error": "Categoría faltante"}), 400
-        
+
     negocio.actualizar_orden_categoria(categoria, lista_opciones)
     return jsonify({"success": True})
+
 
 @app.route('/api/orden/agregar', methods=['POST'])
 def agregar_opcion():
@@ -304,6 +309,8 @@ def agregar_opcion():
 # =====================================================================
 # ENDPOINT PARA RENDERIZAR LA INTERFAZ WEB
 # =====================================================================
+
+
 @app.route('/')
 def home():
     # Flask buscará automáticamente este archivo dentro de la carpeta 'templates/'
@@ -312,26 +319,29 @@ def home():
 # =====================================================================
 # ENDPOINTS DE LA API (MANEJO DE MULTIPART FORM DATA PARA SUBIDA REAL)
 # =====================================================================
+
+
 @app.route('/api/procesar', methods=['POST'])
 def procesar_seleccion():
     data = request.json or {}
     opciones = data.get('opciones', [])
-    
+
     valido, mensaje = negocio.validar_combinacion(opciones)
     archivos = negocio.listar_archivos_por_combinacion(opciones) if valido else []
-    
+
     return jsonify({
         "valido": valido,
         "mensaje": mensaje,
         "archivos": archivos
     })
 
+
 @app.route('/api/subir', methods=['POST'])
 def subir_archivo():
     # Validar que venga el archivo físico en el cuerpo del request
     if 'archivo' not in request.files:
         return jsonify({"success": False, "error": "No se envió ningún archivo"}), 400
-        
+
     archivo = request.files['archivo']
     # Recuperar las opciones asociadas que vienen desde el formulario
     opciones = request.form.getlist('opciones')
@@ -342,7 +352,7 @@ def subir_archivo():
         return jsonify({"success": False, "error": mensaje}), 400
 
     pk, hash_resultado = negocio.procesar_y_guardar_archivo(archivo, opciones)
-    
+
     return jsonify({
         "success": True,
         "pk": pk,
@@ -352,6 +362,8 @@ def subir_archivo():
 # =====================================================================
 # ENDPOINT PARA SERVIR ARCHIVOS MULTIMEDIA DESDE LA CARPETA MEDIA/
 # =====================================================================
+
+
 @app.route('/media/<filename>')
 def servir_archivo_multimedia(filename):
     """
@@ -382,6 +394,8 @@ def servir_archivo_multimedia(filename):
 # =====================================================================
 # ENDPOINT PARA ELIMINAR UN ARCHIVO (DISCO + BASE DE DATOS)
 # =====================================================================
+
+
 @app.route('/api/eliminar/<int:archivo_id>', methods=['DELETE'])
 def eliminar_archivo(archivo_id):
     """
@@ -406,6 +420,8 @@ def eliminar_archivo(archivo_id):
 # =====================================================================
 # ENDPOINT PARA CAMBIAR LA COMBINACIÓN DE OPCIONES DE UN ARCHIVO YA SUBIDO
 # =====================================================================
+
+
 @app.route('/api/archivos/<int:archivo_id>/opciones', methods=['PUT'])
 def cambiar_opciones_archivo(archivo_id):
     """
