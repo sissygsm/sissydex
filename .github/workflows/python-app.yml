@@ -29,12 +29,16 @@ jobs:
 
     - name: Install lint/test tools
       run: |
-        venv/bin/pip install flake8 pytest
+        venv/bin/pip install flake8 mypy pytest
 
     - name: Lint with flake8
       run: |
         # No --exit-zero: every violation here fails the build. 127 chars matches the GitHub editor width.
         venv/bin/flake8 . --count --exclude=venv --max-complexity=10 --max-line-length=127 --show-source --statistics
+
+    - name: Type-check with mypy
+      run: |
+        venv/bin/mypy backend/services tests
 
     - name: Test with pytest
       run: |
