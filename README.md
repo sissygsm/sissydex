@@ -200,3 +200,25 @@ de directorios respaldado por `GET /api/explorar?ruta=<path>`, que lista
 carpetas/archivos del propio disco donde corre el servidor. Elegir un
 archivo ahí dispara `POST /api/subir` con su ruta absoluta (JSON, no
 multipart) en vez de subir sus bytes.
+
+## Seguridad: contención de rutas
+
+La app no tiene autenticación, y `ruta`/`ruta_absoluta` de los dos endpoints
+de arriba son dato crudo del request usado para tocar el filesystem
+(`os.scandir`, `os.rename`) -exactamente lo que la regla `py/path-injection`
+de CodeQL marca-. Restringir a una carpeta base fija rompería la idea misma
+de la feature (elegir cualquier archivo propio), así que en cambio se
+restringe a una raíz *configurable*: `RAIZ_PERMITIDA` (`backend/services/
+document_logic.py`) es el home del usuario por defecto, y se puede apuntar a
+otro disco/punto de montaje con la variable de entorno
+`SISSYDEX_ROOT_PERMITIDO`. Toda ruta que llega desde un request se resuelve
+con `os.path.realpath` (sigue symlinks, colapsa "..") y se descarta si el
+resultado no queda contenido dentro de esa raíz -de ahí en más solo se usa
+el valor ya resuelto, nunca el string crudo-.
+
+Por la misma razón (elegir cualquier archivo = superficie de ataque real sin
+login), `make run` liga el server a `127.0.0.1` únicamente por defecto
+-nadie más en tu red local puede alcanzarlo-, configurable con la variable de
+entorno `FLASK_HOST` si en algún momento hace falta acceso desde otro
+dispositivo. Esto no aplica al entrypoint de Docker (`backend/app.py`), que
+necesita `0.0.0.0` para que el mapeo de puertos del contenedor funcione.
