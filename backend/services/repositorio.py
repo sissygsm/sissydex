@@ -88,15 +88,6 @@ class RepositorioArchivos:
         self._conn.commit()
         cursor.close()
 
-    def eliminar_por_nombre(self, nombre_archivo: str) -> int:
-        """Devuelve cuántas filas se eliminaron."""
-        cursor = self._conn.cursor()
-        cursor.execute("DELETE FROM archivos WHERE nombre_original = ?", (nombre_archivo,))
-        eliminados = cursor.rowcount
-        self._conn.commit()
-        cursor.close()
-        return eliminados
-
 
 class RepositorioOrdenOpciones:
     """INTERFAZ A PROTEGER: único punto de acceso SQL a la tabla `orden_opciones`."""
