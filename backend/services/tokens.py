@@ -23,7 +23,7 @@ class AlmacenTokens:
 
     def __init__(self, capacidad_maxima: int = 512):
         self._capacidad_maxima = capacidad_maxima
-        self._mapa: "OrderedDict[str, object]" = OrderedDict()
+        self._mapa: OrderedDict[str, object] = OrderedDict()
 
     def mintear(self, valor: object) -> str:
         token = secrets.token_urlsafe(16)
@@ -32,7 +32,7 @@ class AlmacenTokens:
             self._mapa.popitem(last=False)
         return token
 
-    def resolver(self, token: str):
+    def resolver(self, token: str) -> object | None:
         return self._mapa.get(token)
 
     def descartar(self, token: str) -> None:
