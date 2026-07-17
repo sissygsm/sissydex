@@ -223,7 +223,7 @@ h2 {
 }
 
 /* Explorador de directorios del servidor (reemplaza al <input type="file">
-   nativo, ver 4ta Sección) */
+   nativo, ver 5ta Sección) */
 .modal-explorador {
     position: fixed;
     top: 0;
