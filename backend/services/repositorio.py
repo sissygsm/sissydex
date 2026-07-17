@@ -79,6 +79,13 @@ class RepositorioArchivos:
         self._conn.commit()
         cursor.close()
 
+    def obtener_todos(self) -> list[tuple[int, str, str, str]]:
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT id, nombre_original, combinacion_opciones, hash_calculado_hex FROM archivos")
+        filas = cursor.fetchall()
+        cursor.close()
+        return filas
+
     def actualizar_combinacion(self, archivo_id: int, nombre_nuevo: str, texto_opciones: str, hash_hex: str) -> None:
         cursor = self._conn.cursor()
         cursor.execute(
