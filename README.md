@@ -101,6 +101,7 @@ sissydex/
 ├── docker-compose.yml
 ├── .dockerignore
 ├── Makefile
+├── mypy.ini                       # mypy_path=backend/services + ignore_missing_imports para botocore.*
 └── venv/                          # Entorno virtual local (no versionado)
 ```
 
@@ -136,7 +137,11 @@ cómo funciona `.PHONY` en make; la mitigación es que `make`/`make all` ya es
 el default correcto, así que nunca hace falta escribir `.PHONY`.
 
 Hay una suite de tests real en `tests/` (`venv/bin/pytest tests/`, ver más
-abajo) y `flake8` corre en CI. No hay formatter configurado.
+abajo), `flake8` corre en CI, y también `mypy backend/services tests` (config
+en `mypy.ini` -ver comentarios ahí: fija `mypy_path = backend/services` para
+que `tests/` resuelva `document_logic`/`storage`/`tokens` igual que lo hace
+`tests/conftest.py` en runtime, e ignora `import-untyped` solo para
+`botocore.*`, no en general-). No hay formatter configurado.
 
 ## Tests
 
