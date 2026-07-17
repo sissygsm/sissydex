@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from storage import EstrategiaAlmacenamiento, AlmacenamientoReferenciado  # noqa: E402
 from repositorio import RepositorioArchivos, RepositorioOrdenOpciones  # noqa: E402
+from tokens import AlmacenTokens  # noqa: E402
 
 # El modo debug del servidor de desarrollo de Werkzeug expone un debugger
 # interactivo que permite ejecutar código arbitrario si queda accesible
@@ -41,9 +42,7 @@ SEED_SQL_PATH = os.path.join(PROJECT_ROOT, "storage_database", "seeds", "orden_o
 os.makedirs(MEDIA_FOLDER, exist_ok=True)
 
 # Directorio raíz al que se restringen GET /api/explorar y POST /api/subir
-# (CWE-22 / CodeQL py/path-injection: `ruta` y `ruta_absoluta` llegan crudos
-# desde el request, y sin este límite viajarían sin validar hasta los
-# os.scandir/os.rename de storage.py). Por defecto es el home del usuario del
+# (CWE-22 / CodeQL py/path-injection). Por defecto es el home del usuario del
 # SO que corre el server -el caso de uso típico de "tagear mis propios
 # archivos"-, configurable si esos archivos viven en otro disco/punto de
 # montaje. El chequeo de contención en sí se repite inline en cada punto que
@@ -51,7 +50,10 @@ os.makedirs(MEDIA_FOLDER, exist_ok=True)
 # helper compartido: CodeQL no reconoce un sanitizer aplicado dentro de una
 # función auxiliar como una barrera para el dato que termina en el
 # llamador, solo el patrón guardián inline en la misma función que hace el
-# acceso a disco.
+# acceso a disco. Esto sigue corriendo como defensa en profundidad aunque
+# `ruta`/`ruta_absoluta` ya no lleguen crudas desde el request -ver
+# tokens.py: GET /api/explorar y POST /api/subir solo aceptan un token
+# opaco, resuelto a la ruta que el propio servidor ya validó al mintearlo-.
 RAIZ_PERMITIDA = os.path.realpath(os.environ.get("SISSYDEX_ROOT_PERMITIDO", os.path.expanduser("~")))
 
 
@@ -71,6 +73,11 @@ class LogicaNegocioArchivos:
         self.almacenamiento = almacenamiento if almacenamiento is not None else AlmacenamientoReferenciado(RAIZ_PERMITIDA)
         self.repo_archivos = RepositorioArchivos(self.conn)
         self.repo_orden = RepositorioOrdenOpciones(self.conn)
+        # Namespaces separados para que un token de carpeta nunca pueda
+        # reusarse como token de archivo (ver tokens.py / CLAUDE.md "Security:
+        # path containment").
+        self._tokens_carpetas = AlmacenTokens()
+        self._tokens_archivos = AlmacenTokens()
         self._inicializar_db()
 
     def _inicializar_db(self):
@@ -305,7 +312,13 @@ class LogicaNegocioArchivos:
         barrera, no "esta variable se reasignó a un valor limpio en la rama
         que falló" -aunque el resultado final sea el mismo (cae a
         RAIZ_PERMITIDA), la forma del control de flujo es la que determina si
-        el análisis estático confirma la validación-.
+        el análisis estático confirma la validación-. Además mintea un token
+        opaco por entrada y para "subir un nivel" (ver tokens.py): son la capa
+        real que reemplaza a `ruta` como entrada de estos endpoints -ver
+        CLAUDE.md "Security: path containment"-. `ruta_actual_texto` en la
+        respuesta es SOLO para mostrar en pantalla: el frontend nunca la
+        manda de vuelta, así que reflejarla no reintroduce una ruta cruda
+        como dato de entrada.
         """
         ruta_resuelta = RAIZ_PERMITIDA
         try:
@@ -330,12 +343,26 @@ class LogicaNegocioArchivos:
         except PermissionError:
             pass
 
-        ruta_padre_candidata = os.path.dirname(ruta_resuelta)
-        ruta_padre = None
-        if ruta_padre_candidata == RAIZ_PERMITIDA or ruta_padre_candidata.startswith(RAIZ_PERMITIDA + os.sep):
-            ruta_padre = ruta_padre_candidata
+        # Mintea un token por entrada (ver tokens.py): el valor minteado sale
+        # de `ruta_resuelta` (ya validada arriba) + el nombre que el propio
+        # os.scandir devolvió, nunca de `ruta` cruda del request -por eso el
+        # token resultante es seguro de reflejar de vuelta al cliente sin que
+        # eso reintroduzca la ruta como dato de entrada no confiable-.
+        for entrada in entradas:
+            ruta_entrada = os.path.join(ruta_resuelta, entrada["nombre"])
+            almacen = self._tokens_carpetas if entrada["es_carpeta"] else self._tokens_archivos
+            entrada["token"] = almacen.mintear(ruta_entrada)
 
-        return {"ruta_actual": ruta_resuelta, "ruta_padre": ruta_padre, "entradas": entradas}
+        ruta_padre_candidata = os.path.dirname(ruta_resuelta)
+        token_padre = None
+        if ruta_padre_candidata == RAIZ_PERMITIDA or ruta_padre_candidata.startswith(RAIZ_PERMITIDA + os.sep):
+            token_padre = self._tokens_carpetas.mintear(ruta_padre_candidata)
+
+        return {
+            "ruta_actual_texto": ruta_resuelta,
+            "token_padre": token_padre,
+            "entradas": entradas,
+        }
 
     def _listar_entradas_visibles(self, directorio):
         """
@@ -356,6 +383,24 @@ class LogicaNegocioArchivos:
 
         entradas.sort(key=lambda entrada: (not entrada["es_carpeta"], entrada["nombre"].lower()))
         return entradas
+
+    def resolver_token_carpeta(self, token):
+        """Ruta absoluta minteada por explorar_directorio para este token, o None."""
+        return self._tokens_carpetas.resolver(token) if token else None
+
+    def resolver_token_archivo(self, token):
+        """Ruta absoluta minteada por explorar_directorio para este token, o None."""
+        return self._tokens_archivos.resolver(token) if token else None
+
+    def invalidar_token_archivo(self, token):
+        """
+        Se llama tras un tageo exitoso (ver POST /api/subir): sin esto, un
+        replay del mismo token apuntaría a la ruta PRE-hash, que ya no existe
+        con ese nombre -renombrar() no falla si el origen no está, así que un
+        replay silencioso insertaría una segunda fila de BD apuntando a un
+        archivo que nunca se creó-.
+        """
+        self._tokens_archivos.descartar(token)
 
 
 negocio = LogicaNegocioArchivos()
@@ -435,37 +480,43 @@ def explorar_directorio():
     type="file"> nativo: el navegador no puede exponerle a JS la ruta
     absoluta de un archivo local, así que "AGREGAR ARCHIVO" navega el disco
     del propio servidor (esta app corre localmente) en vez de subir bytes.
+
+    `token` (minteado por una respuesta anterior de este mismo endpoint, ver
+    LogicaNegocioArchivos.explorar_directorio) es la única entrada aceptada:
+    se resuelve acá a la ruta que el servidor ya validó al mintearlo, así que
+    ninguna ruta de filesystem cruda llega nunca desde el request (ver
+    CLAUDE.md "Security: path containment"). Un token vacío/desconocido cae
+    al mismo fallback ('' -> RAIZ_PERMITIDA) que explorar_directorio ya
+    maneja para cualquier entrada inválida.
     """
-    ruta = request.args.get('ruta', '')
+    token = request.args.get('token', '')
+    ruta = negocio.resolver_token_carpeta(token) or ''
     return jsonify(negocio.explorar_directorio(ruta))
 
 
 @app.route('/api/subir', methods=['POST'])
 def subir_archivo():
     data = request.json or {}
-    ruta_absoluta = data.get('ruta_absoluta')
+    token = data.get('token')
     opciones = data.get('opciones', [])
 
     # El archivo se referencia por ruta absoluta (elegida vía el explorador
-    # de GET /api/explorar), nunca se sube/copia. `ruta_absoluta` es dato
-    # crudo del body del request: se resuelve y contiene dentro de
-    # RAIZ_PERMITIDA inline acá mismo (ver comentario junto a RAIZ_PERMITIDA
-    # sobre por qué no vive en un helper compartido), y de acá en más solo se
-    # usa `ruta_resuelta` -nunca el string original- para que la contención
-    # llegue intacta hasta procesar_y_guardar_archivo / storage.py. El chequeo
-    # de contención y el de os.path.isfile van en sentencias `if` separadas
-    # (no combinadas con `or` en una sola condición): así el segundo chequeo
-    # queda dominado por el `return` del primero, que es la forma que CodeQL
-    # reconoce como barrera -combinar ambos en una única expresión booleana
-    # deja el os.path.isfile "al lado" del chequeo, no protegido por él-.
+    # de GET /api/explorar), nunca se sube/copia. `token` (minteado por una
+    # respuesta anterior de GET /api/explorar) es la única entrada aceptada:
+    # se resuelve acá a la ruta que el servidor ya validó al mintearlo, así
+    # que ninguna ruta de filesystem cruda llega nunca desde este request
+    # (ver CLAUDE.md "Security: path containment"). El chequeo de
+    # os.path.isfile va en su propia sentencia `if`, dominada por el `return`
+    # del chequeo de token anterior -la forma que CodeQL reconoce como
+    # barrera-.
+    if not token:
+        return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
+
+    ruta_absoluta = negocio.resolver_token_archivo(token)
     if not ruta_absoluta:
         return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
-    ruta_resuelta = os.path.realpath(ruta_absoluta)
-    if not (ruta_resuelta == RAIZ_PERMITIDA or ruta_resuelta.startswith(RAIZ_PERMITIDA + os.sep)):
-        return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
-
-    if not os.path.isfile(ruta_resuelta):
+    if not os.path.isfile(ruta_absoluta):
         return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
     # Validar que la combinación sea permitida antes de tocar disco/DB
@@ -473,7 +524,8 @@ def subir_archivo():
     if not valido:
         return jsonify({"success": False, "error": mensaje}), 400
 
-    pk, hash_resultado = negocio.procesar_y_guardar_archivo(ruta_resuelta, opciones)
+    pk, hash_resultado = negocio.procesar_y_guardar_archivo(ruta_absoluta, opciones)
+    negocio.invalidar_token_archivo(token)
 
     return jsonify({
         "success": True,
