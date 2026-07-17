@@ -105,18 +105,37 @@ class TestExplorarDirectorioContencion:
 
         resultado = negocio.explorar_directorio(os.path.join(raiz, "sub"))
 
-        assert resultado["ruta_actual"] == os.path.join(raiz, "sub")
-        assert resultado["entradas"] == [{"nombre": "archivo.txt", "es_carpeta": False}]
+        assert resultado["ruta_actual_texto"] == os.path.join(raiz, "sub")
+        assert len(resultado["entradas"]) == 1
+        entrada = resultado["entradas"][0]
+        assert entrada["nombre"] == "archivo.txt"
+        assert entrada["es_carpeta"] is False
+        assert entrada["token"]
 
     def test_ruta_fuera_de_la_raiz_cae_a_la_raiz(self, negocio, raiz):
         resultado = negocio.explorar_directorio("/etc")
-        assert resultado["ruta_actual"] == raiz
+        assert resultado["ruta_actual_texto"] == raiz
 
     def test_traversal_con_puntos_dobles_cae_a_la_raiz(self, negocio, raiz):
         fuera = os.path.join(raiz, "..", "..", "etc")
         resultado = negocio.explorar_directorio(fuera)
-        assert resultado["ruta_actual"] == raiz
+        assert resultado["ruta_actual_texto"] == raiz
 
     def test_subir_un_nivel_desde_la_raiz_misma_queda_deshabilitado(self, negocio, raiz):
         resultado = negocio.explorar_directorio(raiz)
-        assert resultado["ruta_padre"] is None
+        assert resultado["token_padre"] is None
+
+    def test_tokens_minteados_resuelven_a_la_ruta_correcta(self, negocio, raiz):
+        os.makedirs(os.path.join(raiz, "sub"))
+        with open(os.path.join(raiz, "archivo.txt"), "w") as f:
+            f.write("x")
+
+        resultado = negocio.explorar_directorio(raiz)
+
+        entrada_carpeta = next(e for e in resultado["entradas"] if e["nombre"] == "sub")
+        entrada_archivo = next(e for e in resultado["entradas"] if e["nombre"] == "archivo.txt")
+        assert negocio._tokens_carpetas.resolver(entrada_carpeta["token"]) == os.path.join(raiz, "sub")
+        assert negocio._tokens_archivos.resolver(entrada_archivo["token"]) == os.path.join(raiz, "archivo.txt")
+
+        resultado_sub = negocio.explorar_directorio(os.path.join(raiz, "sub"))
+        assert negocio._tokens_carpetas.resolver(resultado_sub["token_padre"]) == raiz
