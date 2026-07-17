@@ -2,10 +2,18 @@
 // Referencias a los elementos del DOM (HTML)
 const checkboxes = document.querySelectorAll('.opc-chk');
 const btnSubir = document.getElementById('btn-subir');
-const inputArchivo = document.getElementById('input-archivo-nativo');
 const listaArchivos = document.getElementById('lista-archivos');
 const motivoError = document.getElementById('motivo-error');
 const mensajeEstado = document.getElementById('estado-mensaje');
+
+// Explorador de directorios del servidor (reemplaza al <input type="file">
+// nativo: el navegador no expone la ruta absoluta de un archivo local, y esta
+// app necesita esa ruta para referenciar el archivo sin copiarlo).
+const modalExplorador = document.getElementById('modal-explorador');
+const rutaActualExplorador = document.getElementById('ruta-actual-explorador');
+const listaExplorador = document.getElementById('lista-explorador');
+const btnSubirNivel = document.getElementById('btn-subir-nivel');
+const btnCerrarExplorador = document.getElementById('btn-cerrar-explorador');
 
 // Estado del modo "Cambiar Opciones": mientras hay un archivo en edición,
 // actualizarVistaAplicacion() no debe reconstruir la 1ra Sección (perdería el
@@ -29,30 +37,65 @@ checkboxes.forEach(checkbox => {
     checkbox.addEventListener('change', actualizarVistaAplicacion);
 });
 
-// Forzar la apertura del buscador nativo de Windows desde el botón estilizado
+// Abrir el explorador de directorios del servidor en vez del picker nativo
 btnSubir.addEventListener('click', () => {
-    inputArchivo.click();
+    modalExplorador.style.display = 'flex';
+    cargarDirectorioExplorador('');
 });
 
-// Capturar el archivo seleccionado y enviarlo al Backend de Python
-inputArchivo.addEventListener('change', function() {
-    if (this.files.length === 0) return;
-    
-    const archivoSeleccionado = this.files[0];
-    const formData = new FormData();
-    
-    // Adjuntar el archivo binario real
-    formData.append('archivo', archivoSeleccionado);
-    
-    // Adjuntar el listado de opciones de negocio seleccionadas actualmente
-    obtenerOpcionesSeleccionadas().forEach(opcion => {
-        formData.append('opciones', opcion);
-    });
+btnCerrarExplorador.addEventListener('click', () => {
+    modalExplorador.style.display = 'none';
+});
 
-    // Envío Multipart a la API de Flask
+// Guardado para poder navegar hacia arriba con el botón "Subir un nivel"
+let rutaPadreActualExplorador = null;
+
+btnSubirNivel.addEventListener('click', () => {
+    if (rutaPadreActualExplorador) cargarDirectorioExplorador(rutaPadreActualExplorador);
+});
+
+// Pide al backend el listado de una carpeta (GET /api/explorar) y lo renderiza
+function cargarDirectorioExplorador(ruta) {
+    fetch(`/api/explorar?ruta=${encodeURIComponent(ruta)}`)
+        .then(res => res.json())
+        .then(data => {
+            rutaActualExplorador.innerText = data.ruta_actual;
+            rutaPadreActualExplorador = data.ruta_padre;
+            btnSubirNivel.disabled = !data.ruta_padre;
+
+            listaExplorador.innerHTML = '';
+            data.entradas.forEach(entrada => {
+                const separador = data.ruta_actual.endsWith('/') ? '' : '/';
+                const rutaHija = `${data.ruta_actual}${separador}${entrada.nombre}`;
+
+                const li = document.createElement('li');
+                li.className = entrada.es_carpeta ? 'entrada-carpeta' : 'entrada-archivo';
+                li.innerText = (entrada.es_carpeta ? '📁 ' : '📄 ') + entrada.nombre;
+                li.addEventListener('click', () => {
+                    if (entrada.es_carpeta) {
+                        cargarDirectorioExplorador(rutaHija);
+                    } else {
+                        referenciarArchivoSeleccionado(rutaHija);
+                    }
+                });
+                listaExplorador.appendChild(li);
+            });
+        })
+        .catch(err => console.error("Error al explorar directorio:", err));
+}
+
+// El archivo elegido en el explorador NO se sube: se envía su ruta absoluta
+// para que el backend solo lo referencie y le anteponga el hash al nombre.
+function referenciarArchivoSeleccionado(rutaAbsoluta) {
+    modalExplorador.style.display = 'none';
+
     fetch('/api/subir', {
         method: 'POST',
-        body: formData
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            ruta_absoluta: rutaAbsoluta,
+            opciones: obtenerOpcionesSeleccionadas()
+        })
     })
     .then(res => res.json())
     .then(data => {
@@ -64,10 +107,7 @@ inputArchivo.addEventListener('change', function() {
         }
     })
     .catch(err => console.error("Error de red:", err));
-    
-    // Limpiar el input para permitir cargas sucesivas del mismo archivo
-    this.value = '';
-});
+}
 
 // --- FUNCIONES AUXILIARES DE PROCESAMIENTO ---
 
@@ -107,8 +147,8 @@ function actualizarVistaAplicacion() {
             listaArchivos.innerHTML = `<li class="txt-muted">📂 No hay archivos registrados para esta combinación exacta de opciones.</li>`;
         } else {
             data.archivos.forEach(file => {
-                // Creamos la URL que apunta al endpoint de Flask que acabamos de crear
-                const urlArchivo = `/media/${file.nombre}`;
+                // El archivo se sirve desde su ubicación original por PK, no por nombre
+                const urlArchivo = `/media/${file.id}`;
 
                 listaArchivos.innerHTML += `
                     <li>
@@ -171,7 +211,7 @@ let notificacionSubidaActiva = false;
 // de 2s tapa este mensaje casi de inmediato.
 function mostrarNotificacionSubida(pk, hashGenerado) {
     notificacionSubidaActiva = true;
-    mensajeEstado.innerText = `¡Éxito! Archivo movido a 'media/'. Registrado en BD con PK: [${pk}] Hash generado a partir de la PK: ${hashGenerado}`;
+    mensajeEstado.innerText = `¡Éxito! Archivo referenciado sin copiar. Registrado en BD con PK: [${pk}] Hash generado a partir de la PK: ${hashGenerado}`;
     mensajeEstado.className = "success-box";
     mensajeEstado.style.display = "block";
 
@@ -183,7 +223,7 @@ function mostrarNotificacionSubida(pk, hashGenerado) {
 
 function confirmarYEliminar(id, nombre) {
     // Notificación nativa del navegador para confirmar la acción
-    const seguro = confirm(`¿Estás seguro de que deseas eliminar el archivo "${nombre}"?\nEsta acción lo borrará del disco y de la base de datos.`);
+    const seguro = confirm(`¿Estás seguro de que deseas eliminar el archivo "${nombre}" de la base de datos?\nEl archivo físico permanecerá en su ubicación original, solo se le quitará el prefijo de hash del nombre.`);
     
     if (!seguro) return; // Si el usuario cancela, no hace nada
 
