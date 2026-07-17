@@ -1,0 +1,10 @@
+{
+    "python.defaultInterpreterPath": "./venv/bin/python",
+    "python.analysis.extraPaths": [
+        "./backend",
+        "./backend/services",
+        "./storage_database"
+    ],
+    "python.analysis.importFormat": "relative",
+    "python.analysis.typeCheckingMode": "basic"
+}
