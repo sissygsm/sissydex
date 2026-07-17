@@ -48,34 +48,35 @@ btnCerrarExplorador.addEventListener('click', () => {
 });
 
 // Guardado para poder navegar hacia arriba con el botón "Subir un nivel"
-let rutaPadreActualExplorador = null;
+let tokenPadreActualExplorador = null;
 
 btnSubirNivel.addEventListener('click', () => {
-    if (rutaPadreActualExplorador) cargarDirectorioExplorador(rutaPadreActualExplorador);
+    if (tokenPadreActualExplorador) cargarDirectorioExplorador(tokenPadreActualExplorador);
 });
 
-// Pide al backend el listado de una carpeta (GET /api/explorar) y lo renderiza
-function cargarDirectorioExplorador(ruta) {
-    fetch(`/api/explorar?ruta=${encodeURIComponent(ruta)}`)
+// Pide al backend el listado de una carpeta (GET /api/explorar) y lo renderiza.
+// `token` (vacío = raíz permitida) es un token opaco minteado por una
+// respuesta anterior de este mismo endpoint, nunca una ruta cruda: el
+// navegador nunca vuelve a mandar una ruta de filesystem hacia el backend
+// (ver CLAUDE.md "Security: path containment").
+function cargarDirectorioExplorador(token) {
+    fetch(`/api/explorar?token=${encodeURIComponent(token)}`)
         .then(res => res.json())
         .then(data => {
-            rutaActualExplorador.innerText = data.ruta_actual;
-            rutaPadreActualExplorador = data.ruta_padre;
-            btnSubirNivel.disabled = !data.ruta_padre;
+            rutaActualExplorador.innerText = data.ruta_actual_texto;
+            tokenPadreActualExplorador = data.token_padre;
+            btnSubirNivel.disabled = !data.token_padre;
 
             listaExplorador.innerHTML = '';
             data.entradas.forEach(entrada => {
-                const separador = data.ruta_actual.endsWith('/') ? '' : '/';
-                const rutaHija = `${data.ruta_actual}${separador}${entrada.nombre}`;
-
                 const li = document.createElement('li');
                 li.className = entrada.es_carpeta ? 'entrada-carpeta' : 'entrada-archivo';
                 li.innerText = (entrada.es_carpeta ? '📁 ' : '📄 ') + entrada.nombre;
                 li.addEventListener('click', () => {
                     if (entrada.es_carpeta) {
-                        cargarDirectorioExplorador(rutaHija);
+                        cargarDirectorioExplorador(entrada.token);
                     } else {
-                        referenciarArchivoSeleccionado(rutaHija);
+                        referenciarArchivoSeleccionado(entrada.token);
                     }
                 });
                 listaExplorador.appendChild(li);
@@ -84,16 +85,17 @@ function cargarDirectorioExplorador(ruta) {
         .catch(err => console.error("Error al explorar directorio:", err));
 }
 
-// El archivo elegido en el explorador NO se sube: se envía su ruta absoluta
-// para que el backend solo lo referencie y le anteponga el hash al nombre.
-function referenciarArchivoSeleccionado(rutaAbsoluta) {
+// El archivo elegido en el explorador NO se sube: se envía el token que lo
+// identifica (minteado por GET /api/explorar) para que el backend lo
+// resuelva a su ruta real, la referencie y le anteponga el hash al nombre.
+function referenciarArchivoSeleccionado(tokenArchivo) {
     modalExplorador.style.display = 'none';
 
     fetch('/api/subir', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            ruta_absoluta: rutaAbsoluta,
+            token: tokenArchivo,
             opciones: obtenerOpcionesSeleccionadas()
         })
     })
