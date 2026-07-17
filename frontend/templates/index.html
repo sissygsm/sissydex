@@ -38,12 +38,24 @@
         <div id="estado-mensaje" class="success-box">Agregar un nuevo archivo con el botón AGREGAR</div>
     </section>
 
-    <!-- 4ta Sección: Explorador de Archivos Nativo y Acción de Subida -->
+    <!-- 4ta Sección: Referenciar un archivo existente (no se copia ni se sube) -->
     <section class="card-section">
-        <h2>4ta Sección: Transferencia e Indexación de Archivos</h2>
-        <input type="file" id="input-archivo-nativo">
+        <h2>4ta Sección: Indexación de Archivos por Ruta</h2>
+        <p>El archivo permanece en su ubicación original: solo se guarda su ruta y se le antepone el hash al nombre.</p>
         <button id="btn-subir" class="btn-agregar">AGREGAR ARCHIVO</button>
     </section>
+
+    <!-- Explorador de directorios del servidor: reemplaza al <input type="file">
+         nativo porque el navegador no expone la ruta absoluta de un archivo local. -->
+    <div id="modal-explorador" class="modal-explorador" style="display:none;">
+        <div class="modal-contenido">
+            <h3>Seleccionar archivo</h3>
+            <div id="ruta-actual-explorador" class="ruta-actual"></div>
+            <button id="btn-subir-nivel" type="button" class="btn-agregar-opcion">⬆ Subir un nivel</button>
+            <ul id="lista-explorador" class="explorador-lista"></ul>
+            <button id="btn-cerrar-explorador" type="button" class="btn-eliminar">Cancelar</button>
+        </div>
+    </div>
 
 </body>
 </html>
