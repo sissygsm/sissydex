@@ -4,26 +4,26 @@ These target pure/mechanical invariants, not business rules, so they're safe
 to write without a user story: the hashing math and file-naming convention
 won't change even if the option codes/categories do.
 """
-import io
-
 import pytest
-from werkzeug.datastructures import FileStorage
 
 import document_logic
 
 
 @pytest.fixture
 def negocio(tmp_path, monkeypatch):
-    # Redirige DB y carpeta de medios a tmp_path para no tocar el storage real del proyecto.
-    monkeypatch.setattr(document_logic, "MEDIA_FOLDER", str(tmp_path))
+    # Redirige la BD a tmp_path para no tocar el storage real del proyecto.
     monkeypatch.setattr(document_logic, "DB_PATH", str(tmp_path / "test.db"))
     instancia = document_logic.LogicaNegocioArchivos()
     yield instancia
     instancia.conn.close()
 
 
-def _archivo(nombre="prueba.txt", contenido=b"contenido"):
-    return FileStorage(stream=io.BytesIO(contenido), filename=nombre)
+def _crear_archivo(tmp_path, nombre="prueba.txt", contenido=b"contenido"):
+    """Crea un archivo real en tmp_path (el archivo NUNCA se copia: se referencia
+    por ruta absoluta, ver AlmacenamientoReferenciado) y devuelve su ruta."""
+    ruta = tmp_path / nombre
+    ruta.write_bytes(contenido)
+    return str(ruta)
 
 
 class TestCalcularHashOpciones:
@@ -53,7 +53,7 @@ class TestSepararPrefijoHash:
 
 
 class TestProcesarYGuardarArchivo:
-    def test_hash_final_es_pk_xor_hash_opciones(self, negocio):
+    def test_hash_final_es_pk_xor_hash_opciones(self, negocio, tmp_path):
         # Valor esperado precalculado de forma independiente (xxhash.xxh32("b")
         # = 2718739903, un número impar) en vez de re-derivarlo con la misma
         # fórmula que el código de producción: a^b y a+b coinciden en la
@@ -61,13 +61,49 @@ class TestProcesarYGuardarArchivo:
         # hash es par, PK=1 ^ hash == PK=1 + hash), así que ese caso no
         # detectaría una regresión de "^" a "+". "b" fuerza el solapamiento de
         # bits con PK=1 para que XOR y suma den resultados distintos de verdad.
-        pk, hash_hex = negocio.procesar_y_guardar_archivo(_archivo(), ["b"])
+        ruta = _crear_archivo(tmp_path)
+        pk, hash_hex = negocio.procesar_y_guardar_archivo(ruta, ["b"])
 
         assert pk == 1
         assert hash_hex == "a20cadbe"
 
-    def test_archivo_fisico_queda_renombrado_con_el_hash_como_prefijo(self, negocio, tmp_path):
-        pk, hash_hex = negocio.procesar_y_guardar_archivo(_archivo("doc.txt"), ["a"])
+    def test_archivo_fisico_queda_renombrado_in_place_con_el_hash_como_prefijo(self, negocio, tmp_path):
+        ruta = _crear_archivo(tmp_path, "doc.txt")
+        pk, hash_hex = negocio.procesar_y_guardar_archivo(ruta, ["a"])
 
         assert (tmp_path / f"{hash_hex}doc.txt").exists()
         assert not (tmp_path / "doc.txt").exists()
+
+
+class TestEliminarArchivo:
+    def test_quita_el_prefijo_de_hash_pero_no_borra_el_archivo_de_disco(self, negocio, tmp_path):
+        ruta = _crear_archivo(tmp_path, "doc.txt")
+        pk, hash_hex = negocio.procesar_y_guardar_archivo(ruta, ["a"])
+
+        resultado = negocio.eliminar_archivo(pk)
+
+        assert resultado == str(tmp_path / "doc.txt")
+        assert (tmp_path / "doc.txt").exists()
+        assert not (tmp_path / f"{hash_hex}doc.txt").exists()
+
+
+class TestCambiarOpcionesArchivo:
+    def test_renombra_in_place_con_el_hash_de_la_nueva_combinacion(self, negocio, tmp_path):
+        ruta = _crear_archivo(tmp_path, "doc.txt")
+        pk, hash_original = negocio.procesar_y_guardar_archivo(ruta, ["a"])
+
+        ruta_nueva = negocio.cambiar_opciones_archivo(pk, ["b"])
+
+        hash_nuevo = f"{(pk ^ negocio.calcular_hash_opciones(['b'])):08x}"
+        assert hash_nuevo != hash_original
+        assert ruta_nueva == str(tmp_path / f"{hash_nuevo}doc.txt")
+        assert (tmp_path / f"{hash_nuevo}doc.txt").exists()
+        assert not (tmp_path / f"{hash_original}doc.txt").exists()
+
+    def test_actualiza_la_ruta_en_la_base_de_datos(self, negocio, tmp_path):
+        ruta = _crear_archivo(tmp_path, "doc.txt")
+        pk, _ = negocio.procesar_y_guardar_archivo(ruta, ["a"])
+
+        ruta_nueva = negocio.cambiar_opciones_archivo(pk, ["b"])
+
+        assert negocio.obtener_ruta_por_id(pk) == ruta_nueva
