@@ -64,7 +64,7 @@ def static_app_js():
 
 
 class LogicaNegocioArchivos:
-    def __init__(self, conn=None, almacenamiento: EstrategiaAlmacenamiento = None):
+    def __init__(self, conn=None, almacenamiento: EstrategiaAlmacenamiento | None = None):
         # conn/almacenamiento son inyectables (Strategy + Repository via
         # Dependency Inversion) para poder testear con una BD/carpeta
         # temporales; por defecto usan la BD y el storage reales del
@@ -390,7 +390,8 @@ class LogicaNegocioArchivos:
 
     def resolver_token_archivo(self, token):
         """Ruta absoluta minteada por explorar_directorio para este token, o None."""
-        return self._tokens_archivos.resolver(token) if token else None
+        resultado = self._tokens_archivos.resolver(token) if token else None
+        return str(resultado) if resultado is not None else None
 
     def invalidar_token_archivo(self, token):
         """
@@ -513,7 +514,7 @@ def subir_archivo():
         return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
     ruta_absoluta = negocio.resolver_token_archivo(token)
-    if not ruta_absoluta:
+    if not ruta_absoluta or not os.path.isfile(ruta_absoluta):
         return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
     if not os.path.isfile(ruta_absoluta):
