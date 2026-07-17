@@ -228,6 +228,16 @@ raíz; `eliminar`/`existe` no hacen nada / devuelven `False`) -defensa en
 profundidad real, no solo para conformar al scanner: la capa de storage
 tampoco confía ciegamente en quien la llama-.
 
+Dos rondas más de feedback de CodeQL terminaron de darle forma a esto (ver
+CLAUDE.md "Security: path containment" para el detalle completo):
+`AlmacenamientoReferenciado.renombrar` valida tanto el origen como el
+**destino** construido (`directorio + nombre_nuevo`) -que el origen esté
+contenido no garantiza que el destino lo esté si `nombre_nuevo` alguna vez
+trajera ".."-; y la forma del guard importa tanto como que exista: CodeQL
+reconoce como barrera "el resto de la función solo se alcanza si el chequeo
+no hizo `raise`/`return`", no "esta variable se reasignó a un valor seguro y
+se sigue de largo" -aunque el resultado final sea idéntico-.
+
 Por la misma razón (elegir cualquier archivo = superficie de ataque real sin
 login), `make run` liga el server a `127.0.0.1` únicamente por defecto
 -nadie más en tu red local puede alcanzarlo-, configurable con la variable de
