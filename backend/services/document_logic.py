@@ -198,6 +198,43 @@ class LogicaNegocioArchivos:
 
         return archivos_listados
 
+    def buscar_archivos_por_subconjunto(self, opciones_seleccionadas):
+        """
+        3ra Sección ("Resultados de Búsqueda" / botón Buscar): a diferencia de
+        listar_archivos_por_combinacion (que exige la combinación EXACTA),
+        esta búsqueda es por subconjunto -devuelve todo archivo cuyas
+        opciones de identidad incluyan TODAS las opciones seleccionadas,
+        pudiendo el archivo tener además otras opciones no seleccionadas. Si
+        no hay ninguna opción seleccionada no se devuelve nada (igual que
+        listar_archivos_por_combinacion con selección vacía): el conjunto
+        vacío es subconjunto de cualquier archivo, pero "mostrar todo el pool
+        sin haber tildado nada" no tiene sentido de negocio acá.
+        Mismo autosanado de huérfanos que listar_archivos_por_combinacion,
+        ver su docstring.
+        """
+        if not opciones_seleccionadas:
+            return []
+
+        conjunto_seleccionado = set(opciones_seleccionadas)
+        filas = self.repo_archivos.obtener_todos()
+
+        archivos_listados = []
+        ids_huerfanos = []
+        for archivo_id, ruta_absoluta, combinacion_opciones, hash_calculado_hex in filas:
+            conjunto_archivo = set(combinacion_opciones.split(",")) if combinacion_opciones else set()
+            if not conjunto_seleccionado <= conjunto_archivo:
+                continue
+
+            if self.almacenamiento.existe(ruta_absoluta):
+                nombre_mostrado = os.path.basename(ruta_absoluta)
+                archivos_listados.append({"id": archivo_id, "nombre": nombre_mostrado, "hash": hash_calculado_hex})
+            else:
+                ids_huerfanos.append(archivo_id)
+
+        self.repo_archivos.eliminar_por_ids(ids_huerfanos)
+
+        return archivos_listados
+
     def procesar_y_guardar_archivo(self, ruta_absoluta, opciones_seleccionadas):
         """
         El archivo NUNCA se copia (ver AlmacenamientoReferenciado): permanece
@@ -472,6 +509,22 @@ def procesar_seleccion():
         "mensaje": mensaje,
         "archivos": archivos
     })
+
+
+@app.route('/api/buscar', methods=['POST'])
+def buscar_archivos():
+    """
+    3ra Sección ("Resultados de Búsqueda"): a diferencia de /api/procesar
+    (combinación EXACTA, refrescado automáticamente en cada cambio de
+    checkbox), esta ruta solo se dispara con el botón "Buscar" y devuelve
+    archivos por subconjunto -ver LogicaNegocioArchivos.buscar_archivos_por_subconjunto-.
+    """
+    data = request.json or {}
+    opciones = data.get('opciones', [])
+
+    archivos = negocio.buscar_archivos_por_subconjunto(opciones)
+
+    return jsonify({"archivos": archivos})
 
 
 @app.route('/api/explorar', methods=['GET'])
