@@ -40,6 +40,36 @@ SEED_SQL_PATH = os.path.join(PROJECT_ROOT, "storage_database", "seeds", "orden_o
 # Asegurar que la carpeta física de almacenamiento exista en el disco
 os.makedirs(MEDIA_FOLDER, exist_ok=True)
 
+# Directorio raíz al que se restringen GET /api/explorar y POST /api/subir
+# (CWE-22 / CodeQL py/path-injection: `ruta` y `ruta_absoluta` llegan crudos
+# desde el request, y sin este límite viajarían sin validar hasta los
+# os.scandir/os.rename de storage.py). Por defecto es el home del usuario del
+# SO que corre el server -el caso de uso típico de "tagear mis propios
+# archivos"-, configurable si esos archivos viven en otro disco/punto de
+# montaje.
+RAIZ_PERMITIDA = os.path.realpath(os.environ.get("SISSYDEX_ROOT_PERMITIDO", os.path.expanduser("~")))
+
+
+def _resolver_dentro_de_raiz(ruta):
+    """
+    Normaliza `ruta` (resolviendo "..", symlinks, y relativizándola contra
+    RAIZ_PERMITIDA si no es absoluta) y devuelve la ruta resuelta SOLO si
+    queda contenida dentro de RAIZ_PERMITIDA; devuelve None en caso
+    contrario. Este es el patrón de contención que espera la query
+    py/path-injection de CodeQL: de acá en más solo se usa el valor ya
+    resuelto por esta función, nunca el string crudo del request.
+    """
+    if not ruta:
+        return None
+
+    candidata = ruta if os.path.isabs(ruta) else os.path.join(RAIZ_PERMITIDA, ruta)
+    resuelta = os.path.realpath(candidata)
+
+    if os.path.commonpath([RAIZ_PERMITIDA, resuelta]) != RAIZ_PERMITIDA:
+        return None
+
+    return resuelta
+
 
 @app.route('/static/app.js')
 def static_app_js():
@@ -275,20 +305,23 @@ class LogicaNegocioArchivos:
 
     def explorar_directorio(self, ruta):
         """
-        Lista subcarpetas y archivos de `ruta` (o del home del usuario si no
-        se especifica / no es una carpeta válida), para el explorador de
+        Lista subcarpetas y archivos de `ruta` dentro de RAIZ_PERMITIDA (cae a
+        esa raíz si `ruta` viene vacía, no es una carpeta válida, o intenta
+        escapar de la raíz vía ".." o symlinks), para el explorador de
         directorios que reemplaza al <input type="file"> del navegador -este
         último no puede exponerle a JS la ruta absoluta de un archivo local,
         así que "AGREGAR ARCHIVO" navega el disco del propio servidor en vez
         de subir bytes-. No copia ni modifica nada, solo lee el árbol.
+        Ver _resolver_dentro_de_raiz: acá nunca se usa el `ruta` crudo del
+        request, solo su versión ya validada/resuelta.
         """
-        ruta = os.path.abspath(ruta) if ruta else os.path.expanduser("~")
-        if not os.path.isdir(ruta):
-            ruta = os.path.expanduser("~")
+        ruta_resuelta = _resolver_dentro_de_raiz(ruta) if ruta else RAIZ_PERMITIDA
+        if ruta_resuelta is None or not os.path.isdir(ruta_resuelta):
+            ruta_resuelta = RAIZ_PERMITIDA
 
         entradas = []
         try:
-            with os.scandir(ruta) as directorio:
+            with os.scandir(ruta_resuelta) as directorio:
                 for entrada in directorio:
                     if entrada.name.startswith('.'):
                         continue
@@ -302,11 +335,10 @@ class LogicaNegocioArchivos:
 
         entradas.sort(key=lambda entrada: (not entrada["es_carpeta"], entrada["nombre"].lower()))
 
-        ruta_padre = os.path.dirname(ruta)
-        if ruta_padre == ruta:
-            ruta_padre = None
+        ruta_padre_candidata = os.path.dirname(ruta_resuelta)
+        ruta_padre = ruta_padre_candidata if _resolver_dentro_de_raiz(ruta_padre_candidata) else None
 
-        return {"ruta_actual": ruta, "ruta_padre": ruta_padre, "entradas": entradas}
+        return {"ruta_actual": ruta_resuelta, "ruta_padre": ruta_padre, "entradas": entradas}
 
 
 negocio = LogicaNegocioArchivos()
@@ -398,8 +430,13 @@ def subir_archivo():
     opciones = data.get('opciones', [])
 
     # El archivo se referencia por ruta absoluta (elegida vía el explorador
-    # de GET /api/explorar), nunca se sube/copia: validar que exista de verdad.
-    if not ruta_absoluta or not os.path.isfile(ruta_absoluta):
+    # de GET /api/explorar), nunca se sube/copia. `ruta_absoluta` es dato
+    # crudo del body del request: se resuelve y contiene dentro de
+    # RAIZ_PERMITIDA acá mismo (ver _resolver_dentro_de_raiz), y de acá en
+    # más solo se usa `ruta_resuelta` -nunca el string original- para que la
+    # validación llegue intacta hasta storage.py.
+    ruta_resuelta = _resolver_dentro_de_raiz(ruta_absoluta)
+    if ruta_resuelta is None or not os.path.isfile(ruta_resuelta):
         return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
     # Validar que la combinación sea permitida antes de tocar disco/DB
@@ -407,7 +444,7 @@ def subir_archivo():
     if not valido:
         return jsonify({"success": False, "error": mensaje}), 400
 
-    pk, hash_resultado = negocio.procesar_y_guardar_archivo(ruta_absoluta, opciones)
+    pk, hash_resultado = negocio.procesar_y_guardar_archivo(ruta_resuelta, opciones)
 
     return jsonify({
         "success": True,
@@ -503,4 +540,12 @@ def cambiar_opciones_archivo(archivo_id):
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=DEBUG_MODE)
+    # Solo localhost por defecto: esta ruta de entrada (`make run` / correr
+    # este archivo directo) no tiene autenticación y expone tageo de
+    # cualquier archivo dentro de RAIZ_PERMITIDA, así que no debe quedar
+    # alcanzable desde el resto de la red local sin que alguien lo pida
+    # explícitamente. `backend/app.py` -el entrypoint real de Docker- tiene
+    # su propio app.run(host='0.0.0.0', ...) sin tocar, porque ahí SÍ hace
+    # falta para que el mapeo de puertos del contenedor funcione.
+    HOST = os.environ.get("FLASK_HOST", "127.0.0.1")
+    app.run(host=HOST, port=5000, debug=DEBUG_MODE)
