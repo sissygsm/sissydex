@@ -4,6 +4,8 @@ These target pure/mechanical invariants, not business rules, so they're safe
 to write without a user story: the hashing math and file-naming convention
 won't change even if the option codes/categories do.
 """
+import os
+
 import pytest
 
 import document_logic
@@ -11,8 +13,12 @@ import document_logic
 
 @pytest.fixture
 def negocio(tmp_path, monkeypatch):
-    # Redirige la BD a tmp_path para no tocar el storage real del proyecto.
+    # Redirige la BD y la raíz permitida a tmp_path para no tocar el storage
+    # real del proyecto -AlmacenamientoReferenciado rechaza cualquier ruta
+    # fuera de RAIZ_PERMITIDA, así que los archivos de prueba deben quedar
+    # contenidos ahí-.
     monkeypatch.setattr(document_logic, "DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setattr(document_logic, "RAIZ_PERMITIDA", os.path.realpath(str(tmp_path)))
     instancia = document_logic.LogicaNegocioArchivos()
     yield instancia
     instancia.conn.close()
