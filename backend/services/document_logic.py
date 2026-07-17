@@ -299,18 +299,29 @@ class LogicaNegocioArchivos:
         La contención dentro de RAIZ_PERMITIDA se resuelve inline (no vía un
         helper compartido, ver comentario junto a RAIZ_PERMITIDA) justo antes
         de cada acceso a disco: `ruta` crudo del request nunca se usa
-        directo, solo `ruta_resuelta`.
+        directo, solo `ruta_resuelta`. El chequeo usa raise/except en vez de
+        reasignar `ruta_resuelta` a la raíz sobre la marcha: CodeQL reconoce
+        "código posterior solo se alcanza si el chequeo no lanzó" como
+        barrera, no "esta variable se reasignó a un valor limpio en la rama
+        que falló" -aunque el resultado final sea el mismo (cae a
+        RAIZ_PERMITIDA), la forma del control de flujo es la que determina si
+        el análisis estático confirma la validación-.
         """
-        if ruta:
-            candidata = ruta if os.path.isabs(ruta) else os.path.join(RAIZ_PERMITIDA, ruta)
-            ruta_resuelta = os.path.realpath(candidata)
-            if not (ruta_resuelta == RAIZ_PERMITIDA or ruta_resuelta.startswith(RAIZ_PERMITIDA + os.sep)):
-                ruta_resuelta = RAIZ_PERMITIDA
-        else:
-            ruta_resuelta = RAIZ_PERMITIDA
+        ruta_resuelta = RAIZ_PERMITIDA
+        try:
+            if not ruta:
+                raise ValueError("ruta vacía")
 
-        if not os.path.isdir(ruta_resuelta):
-            ruta_resuelta = RAIZ_PERMITIDA
+            candidata = ruta if os.path.isabs(ruta) else os.path.join(RAIZ_PERMITIDA, ruta)
+            candidata_resuelta = os.path.realpath(candidata)
+            if not (candidata_resuelta == RAIZ_PERMITIDA or candidata_resuelta.startswith(RAIZ_PERMITIDA + os.sep)):
+                raise ValueError("fuera de la raíz permitida")
+            if not os.path.isdir(candidata_resuelta):
+                raise ValueError("no es un directorio válido")
+
+            ruta_resuelta = candidata_resuelta
+        except ValueError:
+            pass
 
         entradas = []
         try:
@@ -441,13 +452,20 @@ def subir_archivo():
     # RAIZ_PERMITIDA inline acá mismo (ver comentario junto a RAIZ_PERMITIDA
     # sobre por qué no vive en un helper compartido), y de acá en más solo se
     # usa `ruta_resuelta` -nunca el string original- para que la contención
-    # llegue intacta hasta procesar_y_guardar_archivo / storage.py.
+    # llegue intacta hasta procesar_y_guardar_archivo / storage.py. El chequeo
+    # de contención y el de os.path.isfile van en sentencias `if` separadas
+    # (no combinadas con `or` en una sola condición): así el segundo chequeo
+    # queda dominado por el `return` del primero, que es la forma que CodeQL
+    # reconoce como barrera -combinar ambos en una única expresión booleana
+    # deja el os.path.isfile "al lado" del chequeo, no protegido por él-.
     if not ruta_absoluta:
         return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
     ruta_resuelta = os.path.realpath(ruta_absoluta)
-    dentro_de_la_raiz = ruta_resuelta == RAIZ_PERMITIDA or ruta_resuelta.startswith(RAIZ_PERMITIDA + os.sep)
-    if not dentro_de_la_raiz or not os.path.isfile(ruta_resuelta):
+    if not (ruta_resuelta == RAIZ_PERMITIDA or ruta_resuelta.startswith(RAIZ_PERMITIDA + os.sep)):
+        return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
+
+    if not os.path.isfile(ruta_resuelta):
         return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
     # Validar que la combinación sea permitida antes de tocar disco/DB
