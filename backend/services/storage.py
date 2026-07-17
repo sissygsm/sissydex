@@ -84,8 +84,15 @@ class AlmacenamientoReferenciado(EstrategiaAlmacenamiento):
         if not (origen == self._raiz or origen.startswith(self._raiz + os.sep)):
             raise ValueError(f"'{identificador_actual}' está fuera de la raíz permitida.")
 
+        # `nombre_nuevo` también hay que validarlo: el origen contenido en la
+        # raíz no garantiza que el DESTINO lo esté -si nombre_nuevo trajera
+        # ".."/una ruta absoluta, os.path.join podría construir un destino
+        # fuera de self._raiz aunque el origen fuera válido-.
         directorio = os.path.dirname(origen)
-        ruta_nueva = os.path.join(directorio, nombre_nuevo)
+        ruta_nueva = os.path.realpath(os.path.join(directorio, nombre_nuevo))
+        if not (ruta_nueva == self._raiz or ruta_nueva.startswith(self._raiz + os.sep)):
+            raise ValueError(f"El destino '{nombre_nuevo}' queda fuera de la raíz permitida.")
+
         if os.path.exists(origen):
             os.rename(origen, ruta_nueva)
         return ruta_nueva
