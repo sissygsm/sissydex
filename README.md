@@ -2,7 +2,12 @@
 
 Sistema de gestión documental (DMS) chico, hecho con Flask + JS vanilla. Los
 usuarios marcan una combinación de checkboxes agrupados por categoría y
-tagean/buscan archivos etiquetados con esa combinación exacta.
+tagean/buscan archivos etiquetados con esa combinación exacta. Hay una segunda
+búsqueda independiente (botón "Buscar", 3ra Sección) sobre la misma selección
+de checkboxes pero con matching por subconjunto en vez de exacto: devuelve
+cualquier archivo que tenga TODAS las opciones seleccionadas entre sus
+opciones de identidad, aunque el archivo tenga además otras opciones no
+seleccionadas.
 
 Los archivos nunca se copian: tagear un archivo lo referencia por su ruta
 absoluta original y le antepone el hash al nombre ahí mismo, para que la app
@@ -90,7 +95,8 @@ sissydex/
 │   ├── test_hash_scheme.py        # Unit tests del esquema de hash PK^opciones
 │   ├── test_path_containment.py   # Contención de RAIZ_PERMITIDA (storage.py + explorar_directorio)
 │   ├── test_tokens.py             # Unit tests de AlmacenTokens (mint/resolver/descartar/FIFO)
-│   └── test_explorador_tokens.py  # E2E vía test_client() del flujo /api/explorar + /api/subir por token
+│   ├── test_explorador_tokens.py  # E2E vía test_client() del flujo /api/explorar + /api/subir por token
+│   └── test_busqueda_subconjunto.py  # buscar_archivos_por_subconjunto / POST /api/buscar (botón "Buscar")
 │
 ├── docker-compose.yml
 ├── .dockerignore
@@ -157,6 +163,14 @@ venv/bin/pytest tests/ -v
   flujo completo de `GET /api/explorar` + `POST /api/subir` por token vía
   `test_client()`, incluyendo que un token reusado tras un tageo exitoso se
   rechace en vez de duplicar filas- (ver "Seguridad" más abajo).
+- `test_busqueda_subconjunto.py`: la búsqueda por subconjunto del botón
+  "Buscar" (3ra Sección) -que un archivo con opciones extra igual aparezca,
+  que falte una sola opción seleccionada lo excluya (no es matching OR), que
+  selección vacía no devuelva nada, que no haya falsos positivos por
+  coincidencia parcial de nombres de opción (`"a"` vs `"aa"`), y el mismo
+  autosanado de huérfanos que `listar_archivos_por_combinacion`- tanto a
+  nivel de `LogicaNegocioArchivos` como de `POST /api/buscar` vía
+  `test_client()`.
 
 ## Docker
 
@@ -206,6 +220,20 @@ desde la UI. Al eliminar ("Eliminar" en la UI), el archivo se renombra de
 vuelta a su nombre sin hash pero **nunca se borra de disco**: solo se borra
 su fila en `archivos`. Ver `storage.py` y `repositorio.py` en la sección de
 Arquitectura para dónde vive cada parte de ese flujo.
+
+La 1ra Sección (`POST /api/procesar`, se refresca sola en cada cambio de
+checkbox / cada 2s) filtra por combinación EXACTA: `combinacion_opciones` debe
+ser igual a la selección actual. La 3ra Sección (botón "Buscar",
+`LogicaNegocioArchivos.buscar_archivos_por_subconjunto` / `POST /api/buscar`)
+es una búsqueda distinta e independiente sobre la misma selección de
+checkboxes, pero por subconjunto: incluye cualquier archivo cuyas opciones de
+identidad contengan TODAS las opciones seleccionadas, aunque el archivo tenga
+además otras opciones no seleccionadas. No se refresca sola -solo corre al
+hacer clic en "Buscar"- y una selección vacía devuelve lista vacía tanto en el
+cliente como en el servidor (el conjunto vacío es subconjunto de cualquier
+archivo, pero "mostrar todo el pool sin tildar nada" no tiene sentido de
+negocio acá). Comparte con la 1ra Sección el mismo autosanado de filas
+huérfanas (archivo borrado del disco fuera de la app).
 
 Como el navegador no puede exponerle a JS la ruta absoluta de un archivo
 local, "AGREGAR ARCHIVO" no usa un `<input type="file">`: abre un explorador
