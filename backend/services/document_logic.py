@@ -46,29 +46,13 @@ os.makedirs(MEDIA_FOLDER, exist_ok=True)
 # os.scandir/os.rename de storage.py). Por defecto es el home del usuario del
 # SO que corre el server -el caso de uso típico de "tagear mis propios
 # archivos"-, configurable si esos archivos viven en otro disco/punto de
-# montaje.
+# montaje. El chequeo de contención en sí se repite inline en cada punto que
+# toca el filesystem (acá y en storage.py) en vez de vivir en un único
+# helper compartido: CodeQL no reconoce un sanitizer aplicado dentro de una
+# función auxiliar como una barrera para el dato que termina en el
+# llamador, solo el patrón guardián inline en la misma función que hace el
+# acceso a disco.
 RAIZ_PERMITIDA = os.path.realpath(os.environ.get("SISSYDEX_ROOT_PERMITIDO", os.path.expanduser("~")))
-
-
-def _resolver_dentro_de_raiz(ruta):
-    """
-    Normaliza `ruta` (resolviendo "..", symlinks, y relativizándola contra
-    RAIZ_PERMITIDA si no es absoluta) y devuelve la ruta resuelta SOLO si
-    queda contenida dentro de RAIZ_PERMITIDA; devuelve None en caso
-    contrario. Este es el patrón de contención que espera la query
-    py/path-injection de CodeQL: de acá en más solo se usa el valor ya
-    resuelto por esta función, nunca el string crudo del request.
-    """
-    if not ruta:
-        return None
-
-    candidata = ruta if os.path.isabs(ruta) else os.path.join(RAIZ_PERMITIDA, ruta)
-    resuelta = os.path.realpath(candidata)
-
-    if os.path.commonpath([RAIZ_PERMITIDA, resuelta]) != RAIZ_PERMITIDA:
-        return None
-
-    return resuelta
 
 
 @app.route('/static/app.js')
@@ -84,7 +68,7 @@ class LogicaNegocioArchivos:
         # temporales; por defecto usan la BD y el storage reales del
         # proyecto, igual que antes de este refactor.
         self.conn = conn if conn is not None else sqlite3.connect(DB_PATH, check_same_thread=False)
-        self.almacenamiento = almacenamiento if almacenamiento is not None else AlmacenamientoReferenciado()
+        self.almacenamiento = almacenamiento if almacenamiento is not None else AlmacenamientoReferenciado(RAIZ_PERMITIDA)
         self.repo_archivos = RepositorioArchivos(self.conn)
         self.repo_orden = RepositorioOrdenOpciones(self.conn)
         self._inicializar_db()
@@ -312,33 +296,55 @@ class LogicaNegocioArchivos:
         último no puede exponerle a JS la ruta absoluta de un archivo local,
         así que "AGREGAR ARCHIVO" navega el disco del propio servidor en vez
         de subir bytes-. No copia ni modifica nada, solo lee el árbol.
-        Ver _resolver_dentro_de_raiz: acá nunca se usa el `ruta` crudo del
-        request, solo su versión ya validada/resuelta.
+        La contención dentro de RAIZ_PERMITIDA se resuelve inline (no vía un
+        helper compartido, ver comentario junto a RAIZ_PERMITIDA) justo antes
+        de cada acceso a disco: `ruta` crudo del request nunca se usa
+        directo, solo `ruta_resuelta`.
         """
-        ruta_resuelta = _resolver_dentro_de_raiz(ruta) if ruta else RAIZ_PERMITIDA
-        if ruta_resuelta is None or not os.path.isdir(ruta_resuelta):
+        if ruta:
+            candidata = ruta if os.path.isabs(ruta) else os.path.join(RAIZ_PERMITIDA, ruta)
+            ruta_resuelta = os.path.realpath(candidata)
+            if not (ruta_resuelta == RAIZ_PERMITIDA or ruta_resuelta.startswith(RAIZ_PERMITIDA + os.sep)):
+                ruta_resuelta = RAIZ_PERMITIDA
+        else:
+            ruta_resuelta = RAIZ_PERMITIDA
+
+        if not os.path.isdir(ruta_resuelta):
             ruta_resuelta = RAIZ_PERMITIDA
 
         entradas = []
         try:
             with os.scandir(ruta_resuelta) as directorio:
-                for entrada in directorio:
-                    if entrada.name.startswith('.'):
-                        continue
-                    try:
-                        es_carpeta = entrada.is_dir()
-                    except OSError:
-                        continue
-                    entradas.append({"nombre": entrada.name, "es_carpeta": es_carpeta})
+                entradas = self._listar_entradas_visibles(directorio)
         except PermissionError:
             pass
 
-        entradas.sort(key=lambda entrada: (not entrada["es_carpeta"], entrada["nombre"].lower()))
-
         ruta_padre_candidata = os.path.dirname(ruta_resuelta)
-        ruta_padre = ruta_padre_candidata if _resolver_dentro_de_raiz(ruta_padre_candidata) else None
+        ruta_padre = None
+        if ruta_padre_candidata == RAIZ_PERMITIDA or ruta_padre_candidata.startswith(RAIZ_PERMITIDA + os.sep):
+            ruta_padre = ruta_padre_candidata
 
         return {"ruta_actual": ruta_resuelta, "ruta_padre": ruta_padre, "entradas": entradas}
+
+    def _listar_entradas_visibles(self, directorio):
+        """
+        Filtra ocultos y ordena carpetas primero, luego alfabético. `directorio`
+        ya es un os.scandir() en curso sobre una ruta que explorar_directorio
+        validó contra RAIZ_PERMITIDA -esta función no vuelve a tocar el
+        filesystem por fuera de leer atributos de los DirEntry ya obtenidos-.
+        """
+        entradas = []
+        for entrada in directorio:
+            if entrada.name.startswith('.'):
+                continue
+            try:
+                es_carpeta = entrada.is_dir()
+            except OSError:
+                continue
+            entradas.append({"nombre": entrada.name, "es_carpeta": es_carpeta})
+
+        entradas.sort(key=lambda entrada: (not entrada["es_carpeta"], entrada["nombre"].lower()))
+        return entradas
 
 
 negocio = LogicaNegocioArchivos()
@@ -432,11 +438,16 @@ def subir_archivo():
     # El archivo se referencia por ruta absoluta (elegida vía el explorador
     # de GET /api/explorar), nunca se sube/copia. `ruta_absoluta` es dato
     # crudo del body del request: se resuelve y contiene dentro de
-    # RAIZ_PERMITIDA acá mismo (ver _resolver_dentro_de_raiz), y de acá en
-    # más solo se usa `ruta_resuelta` -nunca el string original- para que la
-    # validación llegue intacta hasta storage.py.
-    ruta_resuelta = _resolver_dentro_de_raiz(ruta_absoluta)
-    if ruta_resuelta is None or not os.path.isfile(ruta_resuelta):
+    # RAIZ_PERMITIDA inline acá mismo (ver comentario junto a RAIZ_PERMITIDA
+    # sobre por qué no vive en un helper compartido), y de acá en más solo se
+    # usa `ruta_resuelta` -nunca el string original- para que la contención
+    # llegue intacta hasta procesar_y_guardar_archivo / storage.py.
+    if not ruta_absoluta:
+        return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
+
+    ruta_resuelta = os.path.realpath(ruta_absoluta)
+    dentro_de_la_raiz = ruta_resuelta == RAIZ_PERMITIDA or ruta_resuelta.startswith(RAIZ_PERMITIDA + os.sep)
+    if not dentro_de_la_raiz or not os.path.isfile(ruta_resuelta):
         return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
     # Validar que la combinación sea permitida antes de tocar disco/DB
