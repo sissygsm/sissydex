@@ -3,8 +3,7 @@ import sys
 import sqlite3
 import xxhash
 from flask import Flask, jsonify, request, render_template, send_from_directory
-from markupsafe import escape
-from werkzeug.utils import secure_filename, safe_join
+from werkzeug.utils import secure_filename
 
 # storage.py y repositorio.py son módulos hermanos sin paquete formal (sin
 # __init__.py). Este archivo se invoca de dos formas distintas -directo
@@ -15,7 +14,7 @@ from werkzeug.utils import secure_filename, safe_join
 # abajo resuelvan igual en ambos casos.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from storage import EstrategiaAlmacenamiento, AlmacenamientoLocal  # noqa: E402
+from storage import EstrategiaAlmacenamiento, AlmacenamientoReferenciado  # noqa: E402
 from repositorio import RepositorioArchivos, RepositorioOrdenOpciones  # noqa: E402
 
 # El modo debug del servidor de desarrollo de Werkzeug expone un debugger
@@ -33,6 +32,8 @@ CLIENT_LOGIC_DIR = os.path.join(PROJECT_ROOT, "frontend", "client_logic")
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STYLE_DIR, static_url_path="/static")
 
 DB_PATH = os.path.join(PROJECT_ROOT, "storage_database", "documents_pool", "catalogo_archivos.db")
+# Ya no se copian archivos acá dentro (ver AlmacenamientoReferenciado): esta
+# carpeta solo aloja la base de datos SQLite.
 MEDIA_FOLDER = os.path.join(PROJECT_ROOT, "storage_database", "documents_pool")
 SEED_SQL_PATH = os.path.join(PROJECT_ROOT, "storage_database", "seeds", "orden_opciones_seed.sql")
 
@@ -53,7 +54,7 @@ class LogicaNegocioArchivos:
         # temporales; por defecto usan la BD y el storage reales del
         # proyecto, igual que antes de este refactor.
         self.conn = conn if conn is not None else sqlite3.connect(DB_PATH, check_same_thread=False)
-        self.almacenamiento = almacenamiento if almacenamiento is not None else AlmacenamientoLocal(MEDIA_FOLDER)
+        self.almacenamiento = almacenamiento if almacenamiento is not None else AlmacenamientoReferenciado()
         self.repo_archivos = RepositorioArchivos(self.conn)
         self.repo_orden = RepositorioOrdenOpciones(self.conn)
         self._inicializar_db()
@@ -165,9 +166,10 @@ class LogicaNegocioArchivos:
 
         archivos_listados = []
         ids_huerfanos = []
-        for archivo_id, nombre_original, hash_calculado_hex in filas:
-            if self.almacenamiento.existe(nombre_original):
-                archivos_listados.append({"id": archivo_id, "nombre": nombre_original, "hash": hash_calculado_hex})
+        for archivo_id, ruta_absoluta, hash_calculado_hex in filas:
+            if self.almacenamiento.existe(ruta_absoluta):
+                nombre_mostrado = os.path.basename(ruta_absoluta)
+                archivos_listados.append({"id": archivo_id, "nombre": nombre_mostrado, "hash": hash_calculado_hex})
             else:
                 ids_huerfanos.append(archivo_id)
 
@@ -175,95 +177,136 @@ class LogicaNegocioArchivos:
 
         return archivos_listados
 
-    def procesar_y_guardar_archivo(self, archivo_flask, opciones_seleccionadas):
+    def procesar_y_guardar_archivo(self, ruta_absoluta, opciones_seleccionadas):
         """
-        1. Guarda el archivo físicamente en media/ con su nombre original
-        2. Inserta el registro para obtener la PK automáticamente
-        3. Calcula el hash final combinando (PK ^ Hash_Opciones)
-        4. Renombra el archivo físico anteponiendo el hash al nombre original
-           (ej: hash "abc123" + "feele.txt" -> "abc123feele.txt") y guarda ese
-           mismo nombre en `nombre_original`, ya que el resto del código usa
-           esa columna para ubicar el archivo físico a través de self.almacenamiento.
+        El archivo NUNCA se copia (ver AlmacenamientoReferenciado): permanece
+        en `ruta_absoluta`, elegida vía el explorador de directorios del
+        backend (explorar_directorio / GET /api/explorar).
+        1. Inserta el registro (con la ruta original) para obtener la PK
+        2. Calcula el hash final combinando (PK ^ Hash_Opciones)
+        3. Renombra el archivo IN PLACE anteponiendo el hash al nombre base
+           (ej: hash "abc123" + "feele.txt" -> "abc123feele.txt", en el mismo
+           directorio) y guarda esa ruta absoluta ya renombrada en
+           `nombre_original`, ya que el resto del código usa esa columna para
+           ubicar el archivo físico a través de self.almacenamiento.
         """
-        # Limpiar el nombre del archivo para evitar problemas de rutas en Windows/Linux
-        nombre_base = secure_filename(archivo_flask.filename)
-
-        # Guardar el archivo físicamente con su nombre base (todavía no se
-        # conoce el hash: depende de la PK autoincremental)
-        self.almacenamiento.guardar(nombre_base, archivo_flask)
+        # Limpiar el nombre base para evitar problemas de rutas en Windows/Linux
+        nombre_base = secure_filename(os.path.basename(ruta_absoluta))
 
         # Serializar el conjunto de opciones para guardarlo como texto (ej: "Opcion_A,Opcion_B")
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
 
-        # Registrar inicialmente el archivo para detonar el AUTOINCREMENT (PK)
-        pk_generada = self.repo_archivos.insertar_inicial(nombre_base, texto_opciones)
+        # Registrar inicialmente el archivo (con su ruta original) para detonar el AUTOINCREMENT (PK)
+        pk_generada = self.repo_archivos.insertar_inicial(ruta_absoluta, texto_opciones)
 
         # Calcular el hash definitivo: Operación XOR entre la PK (int) y el Hash de Opciones (int)
         hash_opciones_int = self.calcular_hash_opciones(opciones_seleccionadas)
         hash_final_int = pk_generada ^ hash_opciones_int
         hash_final_hex = f"{hash_final_int:08x}"
 
-        # Renombrar el archivo físico anteponiendo el hash al nombre original
+        # Renombrar el archivo físico in place anteponiendo el hash al nombre base
         nombre_con_hash = f"{hash_final_hex}{nombre_base}"
-        self.almacenamiento.renombrar(nombre_base, nombre_con_hash)
+        ruta_con_hash = self.almacenamiento.renombrar(ruta_absoluta, nombre_con_hash)
 
-        # Actualizar el registro con su Hash definitivo y el nombre físico final
-        self.repo_archivos.actualizar_nombre_y_hash(pk_generada, nombre_con_hash, hash_final_hex)
+        # Actualizar el registro con su Hash definitivo y la ruta física final
+        self.repo_archivos.actualizar_nombre_y_hash(pk_generada, ruta_con_hash, hash_final_hex)
 
         return pk_generada, hash_final_hex
 
     def eliminar_archivo(self, archivo_id):
         """
-        Busca el registro por su PK, borra el archivo físico si aún existe
-        y elimina el registro de la base de datos.
-        Retorna el nombre_original si se eliminó, o None si el id no existe.
+        Busca el registro por su PK, le quita el prefijo de hash a su nombre
+        físico (renombrado in place, el archivo NUNCA se borra de disco) y
+        elimina el registro de la base de datos.
+        Retorna la ruta absoluta (ya sin el prefijo de hash) si se eliminó el
+        registro, o None si el id no existe.
         """
-        nombre_archivo = self.repo_archivos.obtener_nombre_por_id(archivo_id)
-        if nombre_archivo is None:
+        ruta_actual = self.repo_archivos.obtener_nombre_por_id(archivo_id)
+        if ruta_actual is None:
             return None
 
-        # eliminar() no falla si el archivo ya no está presente en disco.
-        self.almacenamiento.eliminar(nombre_archivo)
+        nombre_sin_hash = self._separar_prefijo_hash(os.path.basename(ruta_actual))
+        # renombrar() no falla si el archivo ya no está presente en disco.
+        ruta_sin_hash = self.almacenamiento.renombrar(ruta_actual, nombre_sin_hash)
         self.repo_archivos.eliminar_por_id(archivo_id)
 
-        return nombre_archivo
+        return ruta_sin_hash
 
     def cambiar_opciones_archivo(self, archivo_id, opciones_seleccionadas):
         """
-        Reasigna la combinación de opciones de un archivo ya subido (botón
+        Reasigna la combinación de opciones de un archivo ya tageado (botón
         "Cambiar Opciones" / "Aceptar" en la 1ra Sección). Recalcula el hash
         igual que en procesar_y_guardar_archivo (PK XOR hash de opciones) y
-        renombra el archivo físico para que su prefijo de hash quede acorde a
-        la nueva combinación, conservando el nombre base original.
-        Retorna el nombre_original (nuevo) si existía, o None si el id no existe.
+        renombra el archivo físico IN PLACE para que su prefijo de hash quede
+        acorde a la nueva combinación, conservando el nombre base y el
+        directorio original.
+        Retorna la ruta absoluta (nueva) si existía, o None si el id no existe.
         """
-        nombre_actual = self.repo_archivos.obtener_nombre_por_id(archivo_id)
-        if nombre_actual is None:
+        ruta_actual = self.repo_archivos.obtener_nombre_por_id(archivo_id)
+        if ruta_actual is None:
             return None
 
-        nombre_base = self._separar_prefijo_hash(nombre_actual)
+        nombre_base = self._separar_prefijo_hash(os.path.basename(ruta_actual))
 
         texto_opciones = ",".join(sorted(opciones_seleccionadas))
         hash_opciones_int = self.calcular_hash_opciones(opciones_seleccionadas)
         hash_final_hex = f"{(archivo_id ^ hash_opciones_int):08x}"
-        nombre_nuevo = f"{hash_final_hex}{nombre_base}"
+        nombre_con_hash = f"{hash_final_hex}{nombre_base}"
 
         # renombrar() no falla si el archivo ya no está presente en disco.
-        self.almacenamiento.renombrar(nombre_actual, nombre_nuevo)
-        self.repo_archivos.actualizar_combinacion(archivo_id, nombre_nuevo, texto_opciones, hash_final_hex)
+        ruta_nueva = self.almacenamiento.renombrar(ruta_actual, nombre_con_hash)
+        self.repo_archivos.actualizar_combinacion(archivo_id, ruta_nueva, texto_opciones, hash_final_hex)
 
-        return nombre_nuevo
+        return ruta_nueva
 
-    def eliminar_por_nombre(self, nombre_archivo):
+    def obtener_ruta_por_id(self, archivo_id):
+        """Ruta absoluta del archivo referenciado por esta PK, o None si no existe."""
+        return self.repo_archivos.obtener_nombre_por_id(archivo_id)
+
+    def eliminar_registro_huerfano(self, archivo_id):
         """
-        Autosanado: borra cualquier registro de `archivos` cuyo nombre_original
-        coincida, sin importar su PK. Se usa cuando /media/<filename> detecta
-        que el archivo ya no existe físicamente (borrado manual, watcher, o la
-        ventana de espera antes de que cualquiera de los dos actualice la BD),
-        para que ese registro deje de aparecer en el listado desde ya, en vez
-        de depender únicamente de que storage_database/watcher.py esté corriendo.
+        Autosanado: borra el registro de `archivos` con esta PK. Se usa cuando
+        GET /media/<id> detecta que el archivo ya no existe en su ruta
+        original (movido o borrado fuera de la app, o la ventana de espera
+        antes de que storage_database/watcher.py actualice la BD), para que
+        ese registro deje de aparecer en el listado desde ya.
         """
-        return self.repo_archivos.eliminar_por_nombre(nombre_archivo)
+        self.repo_archivos.eliminar_por_id(archivo_id)
+
+    def explorar_directorio(self, ruta):
+        """
+        Lista subcarpetas y archivos de `ruta` (o del home del usuario si no
+        se especifica / no es una carpeta válida), para el explorador de
+        directorios que reemplaza al <input type="file"> del navegador -este
+        último no puede exponerle a JS la ruta absoluta de un archivo local,
+        así que "AGREGAR ARCHIVO" navega el disco del propio servidor en vez
+        de subir bytes-. No copia ni modifica nada, solo lee el árbol.
+        """
+        ruta = os.path.abspath(ruta) if ruta else os.path.expanduser("~")
+        if not os.path.isdir(ruta):
+            ruta = os.path.expanduser("~")
+
+        entradas = []
+        try:
+            with os.scandir(ruta) as directorio:
+                for entrada in directorio:
+                    if entrada.name.startswith('.'):
+                        continue
+                    try:
+                        es_carpeta = entrada.is_dir()
+                    except OSError:
+                        continue
+                    entradas.append({"nombre": entrada.name, "es_carpeta": es_carpeta})
+        except PermissionError:
+            pass
+
+        entradas.sort(key=lambda entrada: (not entrada["es_carpeta"], entrada["nombre"].lower()))
+
+        ruta_padre = os.path.dirname(ruta)
+        if ruta_padre == ruta:
+            ruta_padre = None
+
+        return {"ruta_actual": ruta, "ruta_padre": ruta_padre, "entradas": entradas}
 
 
 negocio = LogicaNegocioArchivos()
@@ -317,7 +360,7 @@ def home():
     return render_template('index.html')
 
 # =====================================================================
-# ENDPOINTS DE LA API (MANEJO DE MULTIPART FORM DATA PARA SUBIDA REAL)
+# ENDPOINTS DE LA API
 # =====================================================================
 
 
@@ -336,22 +379,35 @@ def procesar_seleccion():
     })
 
 
+@app.route('/api/explorar', methods=['GET'])
+def explorar_directorio():
+    """
+    Backend del explorador de directorios que reemplaza al <input
+    type="file"> nativo: el navegador no puede exponerle a JS la ruta
+    absoluta de un archivo local, así que "AGREGAR ARCHIVO" navega el disco
+    del propio servidor (esta app corre localmente) en vez de subir bytes.
+    """
+    ruta = request.args.get('ruta', '')
+    return jsonify(negocio.explorar_directorio(ruta))
+
+
 @app.route('/api/subir', methods=['POST'])
 def subir_archivo():
-    # Validar que venga el archivo físico en el cuerpo del request
-    if 'archivo' not in request.files:
-        return jsonify({"success": False, "error": "No se envió ningún archivo"}), 400
+    data = request.json or {}
+    ruta_absoluta = data.get('ruta_absoluta')
+    opciones = data.get('opciones', [])
 
-    archivo = request.files['archivo']
-    # Recuperar las opciones asociadas que vienen desde el formulario
-    opciones = request.form.getlist('opciones')
+    # El archivo se referencia por ruta absoluta (elegida vía el explorador
+    # de GET /api/explorar), nunca se sube/copia: validar que exista de verdad.
+    if not ruta_absoluta or not os.path.isfile(ruta_absoluta):
+        return jsonify({"success": False, "error": "La ruta indicada no corresponde a un archivo válido."}), 400
 
-    # Validar que la combinación sea permitida antes de guardar en disco/DB
+    # Validar que la combinación sea permitida antes de tocar disco/DB
     valido, mensaje = negocio.validar_combinacion(opciones)
     if not valido:
         return jsonify({"success": False, "error": mensaje}), 400
 
-    pk, hash_resultado = negocio.procesar_y_guardar_archivo(archivo, opciones)
+    pk, hash_resultado = negocio.procesar_y_guardar_archivo(ruta_absoluta, opciones)
 
     return jsonify({
         "success": True,
@@ -360,47 +416,48 @@ def subir_archivo():
     })
 
 # =====================================================================
-# ENDPOINT PARA SERVIR ARCHIVOS MULTIMEDIA DESDE LA CARPETA MEDIA/
+# ENDPOINT PARA SERVIR ARCHIVOS MULTIMEDIA DESDE SU UBICACIÓN ORIGINAL
 # =====================================================================
 
 
-@app.route('/media/<filename>')
-def servir_archivo_multimedia(filename):
+@app.route('/media/<int:archivo_id>')
+def servir_archivo_multimedia(archivo_id):
     """
-    Busca el archivo dentro de la carpeta 'media/' y lo envía al navegador.
+    Busca la ruta absoluta del archivo por su PK y lo envía al navegador.
     Flask detectará automáticamente el tipo (mp3, mp4, png, txt) para que
-    el navegador lo reproduzca en lugar de descargarlo de golpe.
+    el navegador lo reproduzca en lugar de descargarlo de golpe. Los archivos
+    ya no viven bajo MEDIA_FOLDER (ver AlmacenamientoReferenciado), así que se
+    sirven desde su directorio original en vez de por nombre relativo.
     """
-    # safe_join devuelve None si filename intenta escapar de MEDIA_FOLDER
-    # (p. ej. vía secuencias "../"), en vez de construir la ruta a ciegas.
-    ruta_fisica = safe_join(MEDIA_FOLDER, filename)
+    ruta_absoluta = negocio.obtener_ruta_por_id(archivo_id)
 
-    if ruta_fisica is None or not os.path.isfile(ruta_fisica):
-        # El archivo ya no existe en disco (borrado manual, por el watcher, o
-        # la ventana de espera antes de que cualquiera de los dos actualice la
-        # BD). Autosanar cualquier registro huérfano que aún lo referencie, y
-        # mostrar un error claro en vez del 404 genérico de Flask.
-        negocio.eliminar_por_nombre(filename)
-        nombre_seguro = escape(filename)
+    if ruta_absoluta is None or not os.path.isfile(ruta_absoluta):
+        # El archivo ya no existe en su ruta original (movido/borrado fuera de
+        # la app, o la ventana de espera antes de que el watcher actualice la
+        # BD). Autosanar el registro huérfano y mostrar un error claro en vez
+        # del 404 genérico de Flask.
+        negocio.eliminar_registro_huerfano(archivo_id)
         return (
             "<h2>Archivo no encontrado</h2>"
-            f"<p>El archivo <code>{nombre_seguro}</code> ya no existe en el almacenamiento. "
-            "Es posible que haya sido eliminado.</p>"
+            "<p>El archivo ya no existe en su ubicación original. "
+            "Es posible que haya sido movido o eliminado.</p>"
             '<p><a href="/">Volver al inicio</a></p>'
         ), 404
 
-    return send_from_directory(MEDIA_FOLDER, filename)
+    directorio, nombre_archivo = os.path.split(ruta_absoluta)
+    return send_from_directory(directorio, nombre_archivo)
 
 # =====================================================================
-# ENDPOINT PARA ELIMINAR UN ARCHIVO (DISCO + BASE DE DATOS)
+# ENDPOINT PARA ELIMINAR UN ARCHIVO (SOLO BASE DE DATOS; EL ARCHIVO FÍSICO
+# PERMANECE EN SU UBICACIÓN, SOLO SE LE QUITA EL PREFIJO DE HASH)
 # =====================================================================
 
 
 @app.route('/api/eliminar/<int:archivo_id>', methods=['DELETE'])
 def eliminar_archivo(archivo_id):
     """
-    Busca el nombre del archivo usando su PK, lo borra de la carpeta media/
-    y finalmente elimina su registro en la base de datos.
+    Busca el archivo usando su PK, le quita el prefijo de hash del nombre
+    físico (in place) y finalmente elimina su registro en la base de datos.
     """
     try:
         resultado = negocio.eliminar_archivo(archivo_id)
@@ -426,8 +483,9 @@ def eliminar_archivo(archivo_id):
 def cambiar_opciones_archivo(archivo_id):
     """
     Reasigna la combinación de opciones de un archivo existente (botón
-    "Cambiar Opciones" -> "Aceptar" de la 1ra Sección). No mueve ni renombra
-    el archivo físico, solo actualiza su fila en `archivos`.
+    "Cambiar Opciones" -> "Aceptar" de la 1ra Sección). Renombra el archivo
+    físico in place (nuevo prefijo de hash, mismo directorio) y actualiza su
+    fila en `archivos` acorde.
     """
     data = request.json or {}
     opciones = data.get('opciones', [])
