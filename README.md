@@ -64,7 +64,8 @@ sissydex/
 │   └── services/
 │       ├── document_logic.py      # App Flask, rutas, y la clase de negocio LogicaNegocioArchivos
 │       ├── storage.py             # Strategy: EstrategiaAlmacenamiento (Local/S3)
-│       └── repositorio.py         # Repository: RepositorioArchivos / RepositorioOrdenOpciones
+│       ├── repositorio.py         # Repository: RepositorioArchivos / RepositorioOrdenOpciones
+│       └── tokens.py              # AlmacenTokens: indirección de tokens opacos (ver Seguridad)
 │
 ├── frontend/
 │   ├── client_logic/
@@ -86,7 +87,10 @@ sissydex/
 ├── tests/
 │   ├── conftest.py                # Pone backend/services/ en sys.path
 │   ├── test_smoke.py              # La app bootea, rutas clave no tiran 500
-│   └── test_hash_scheme.py        # Unit tests del esquema de hash PK^opciones
+│   ├── test_hash_scheme.py        # Unit tests del esquema de hash PK^opciones
+│   ├── test_path_containment.py   # Contención de RAIZ_PERMITIDA (storage.py + explorar_directorio)
+│   ├── test_tokens.py             # Unit tests de AlmacenTokens (mint/resolver/descartar/FIFO)
+│   └── test_explorador_tokens.py  # E2E vía test_client() del flujo /api/explorar + /api/subir por token
 │
 ├── docker-compose.yml
 ├── .dockerignore
@@ -144,6 +148,15 @@ venv/bin/pytest tests/ -v
   tagearlo, y de que "Eliminar" le quite el prefijo de hash sin borrar el
   archivo de disco -la parte mecánica del proyecto que no depende de qué
   reglas de negocio se terminen definiendo-.
+- `test_path_containment.py`: que `AlmacenamientoReferenciado` y
+  `explorar_directorio` rechacen/caigan a la raíz ante rutas fuera de
+  `RAIZ_PERMITIDA`, traversal con "..", y el caso límite de un directorio
+  hermano con nombre-prefijo similar (`/home/user` vs `/home/user2`).
+- `test_tokens.py` / `test_explorador_tokens.py`: la indirección de tokens
+  opacos -mint/resolve/descarte, expulsión FIFO al superar la capacidad, y el
+  flujo completo de `GET /api/explorar` + `POST /api/subir` por token vía
+  `test_client()`, incluyendo que un token reusado tras un tageo exitoso se
+  rechace en vez de duplicar filas- (ver "Seguridad" más abajo).
 
 ## Docker
 
@@ -196,47 +209,72 @@ Arquitectura para dónde vive cada parte de ese flujo.
 
 Como el navegador no puede exponerle a JS la ruta absoluta de un archivo
 local, "AGREGAR ARCHIVO" no usa un `<input type="file">`: abre un explorador
-de directorios respaldado por `GET /api/explorar?ruta=<path>`, que lista
-carpetas/archivos del propio disco donde corre el servidor. Elegir un
-archivo ahí dispara `POST /api/subir` con su ruta absoluta (JSON, no
-multipart) en vez de subir sus bytes.
+de directorios respaldado por `GET /api/explorar?token=<token>` (token vacío
+= raíz), que lista carpetas/archivos del propio disco donde corre el
+servidor. Cada entrada -y el enlace "subir un nivel"- llevan su propio token
+opaco, nunca una ruta cruda; el frontend nunca vuelve a mandarle una ruta de
+filesystem al servidor. Elegir un archivo ahí dispara `POST /api/subir` con
+`{"token": ..., "opciones": [...]}` (JSON, no multipart) en vez de subir sus
+bytes; el servidor resuelve el token a la ruta real antes de tocar disco (ver
+"Seguridad: contención de rutas" más abajo).
 
 ## Seguridad: contención de rutas
 
-La app no tiene autenticación, y `ruta`/`ruta_absoluta` de los dos endpoints
-de arriba son dato crudo del request usado para tocar el filesystem
-(`os.scandir`, `os.rename`) -exactamente lo que la regla `py/path-injection`
-de CodeQL marca-. Restringir a una carpeta base fija rompería la idea misma
-de la feature (elegir cualquier archivo propio), así que en cambio se
-restringe a una raíz *configurable*: `RAIZ_PERMITIDA` (`backend/services/
-document_logic.py`) es el home del usuario por defecto, y se puede apuntar a
-otro disco/punto de montaje con la variable de entorno
-`SISSYDEX_ROOT_PERMITIDO`.
+La app no tiene autenticación. `GET /api/explorar` y `POST /api/subir`
+aceptan **solo un token opaco** minteado por el propio servidor -nunca una
+ruta de filesystem cruda-, que es lo que elimina de raíz la superficie de
+`py/path-injection` que CodeQL marcaba (`os.scandir`, `os.rename` recibiendo
+dato del request). Restringir a una carpeta base fija habría roto la idea
+misma de la feature (elegir cualquier archivo propio), así que la mitigación
+real es el patrón "indirect reference map" de OWASP:
 
-El chequeo (`os.path.realpath` para colapsar ".."/symlinks, y verificar que
-el resultado sea la raíz o empiece con `raíz + separador`) está escrito
-inline en cada punto que toca el filesystem -`explorar_directorio`, la ruta
-`/api/subir`, y cada método de `AlmacenamientoReferenciado` en `storage.py`-
-en vez de vivir en una sola función auxiliar compartida. Una versión
-anterior sí centralizaba esto en un helper, y CodeQL siguió marcando los
-mismos puntos después: no reconoce un sanitizer aplicado dentro de una
-función llamada como una barrera para el valor que recibe quien la llama,
-solo un chequeo escrito inline en la misma función que toca disco.
-`AlmacenamientoReferenciado` además recibe `raiz_permitida` por constructor y
-la hace cumplir por su cuenta (`renombrar` lanza `ValueError` fuera de la
-raíz; `eliminar`/`existe` no hacen nada / devuelven `False`) -defensa en
-profundidad real, no solo para conformar al scanner: la capa de storage
-tampoco confía ciegamente en quien la llama-.
+- `LogicaNegocioArchivos` guarda dos `AlmacenTokens` (`backend/services/
+  tokens.py`) -namespaces separados para carpetas y archivos, así un token de
+  carpeta nunca sirve como token de archivo-. Cada uno es un diccionario en
+  memoria con clave `secrets.token_urlsafe`, con tope de tamaño fijo
+  (se descarta la entrada más vieja al superarlo, sin expiración por
+  tiempo -sería sobreingeniería para una herramienta de un solo usuario-).
+- `explorar_directorio` mintea un token por entrada listada y para "subir un
+  nivel", construido a partir de la ruta que el propio servidor ya validó
+  más el nombre que su propio `os.scandir` devolvió -nunca a partir de la
+  `ruta` cruda del request-.
+- `GET /api/explorar?token=<token>` y `POST /api/subir` resuelven el token
+  con un lookup de diccionario y usan ese *resultado* -nunca el token en
+  sí- para el resto del flujo. Por eso corta la cadena de taint en vez de
+  reubicarla: el valor que termina en `os.rename` es el resultado de un
+  `dict.get()`, y ese diccionario lo pobló un request *distinto* -la llamada
+  anterior a `explorar_directorio`-, sin ninguna dependencia de datos con el
+  token de este request. Dentro del grafo de dataflow de un único request no
+  hay conexión posible entre "llegó este token" y "se tocó esta ruta".
+- `POST /api/subir` invalida el token de archivo apenas el tageo tiene éxito
+  -no es solo prolijidad: `renombrar` no falla si el origen ya no existe y
+  aun así devuelve la ruta que *habría* renombrado, así que reusar un token
+  ya usado insertaría una segunda fila de BD apuntando a un archivo que
+  nunca se creó-. Los tokens de carpeta nunca se invalidan (navegar es de
+  solo lectura).
 
-Dos rondas más de feedback de CodeQL terminaron de darle forma a esto (ver
-CLAUDE.md "Security: path containment" para el detalle completo):
-`AlmacenamientoReferenciado.renombrar` valida tanto el origen como el
-**destino** construido (`directorio + nombre_nuevo`) -que el origen esté
-contenido no garantiza que el destino lo esté si `nombre_nuevo` alguna vez
-trajera ".."-; y la forma del guard importa tanto como que exista: CodeQL
-reconoce como barrera "el resto de la función solo se alcanza si el chequeo
-no hizo `raise`/`return`", no "esta variable se reasignó a un valor seguro y
-se sigue de largo" -aunque el resultado final sea idéntico-.
+Toda la contención de `RAIZ_PERMITIDA` que ya existía (ver debajo) sigue
+funcionando exactamente igual: la capa de tokens se agrega delante, no la
+reemplaza.
+
+**Por qué hizo falta esta capa** (`RAIZ_PERMITIDA`, `backend/services/
+document_logic.py`, home del usuario por defecto, configurable con
+`SISSYDEX_ROOT_PERMITIDO`): varias rondas de intentos previos -confinar a
+esa raíz con `os.path.realpath` + `startswith(raíz + separador)`, escribir
+el chequeo inline en cada punto que toca el filesystem en vez de en un
+helper compartido (CodeQL no reconoce un sanitizer aplicado dentro de una
+función llamada como barrera para el valor que recibe quien la llama),
+`AlmacenamientoReferenciado` validando tanto el origen como el **destino**
+construido (`directorio + nombre_nuevo`), y ajustar la forma del guard a
+`raise`/`return` en vez de reasignar la variable a un valor seguro y seguir
+de largo (CodeQL reconoce la primera forma como barrera, no la segunda,
+aunque el resultado final sea idéntico)- todas mejoraron el código real pero
+CodeQL siguió marcando los mismos sinks. La conclusión fue dejar de intentar
+que una ruta llegue "reconocida como sanitizada" y en cambio asegurarse de
+que una ruta del request nunca llegue a tocar el filesystem -de ahí la capa
+de tokens de arriba-. Todo ese trabajo de contención sigue activo como
+defensa en profundidad (ver CLAUDE.md "Security: path containment" para el
+detalle completo).
 
 Por la misma razón (elegir cualquier archivo = superficie de ataque real sin
 login), `make run` liga el server a `127.0.0.1` únicamente por defecto
