@@ -6,6 +6,10 @@ const listaArchivos = document.getElementById('lista-archivos');
 const motivoError = document.getElementById('motivo-error');
 const mensajeEstado = document.getElementById('estado-mensaje');
 
+// 3ra Sección: Resultados de Búsqueda por subconjunto de opciones.
+const btnBuscar = document.getElementById('btn-buscar');
+const listaResultadosBusqueda = document.getElementById('lista-resultados-busqueda');
+
 // Explorador de directorios del servidor (reemplaza al <input type="file">
 // nativo: el navegador no expone la ruta absoluta de un archivo local, y esta
 // app necesita esa ruta para referenciar el archivo sin copiarlo).
@@ -46,6 +50,11 @@ btnSubir.addEventListener('click', () => {
 btnCerrarExplorador.addEventListener('click', () => {
     modalExplorador.style.display = 'none';
 });
+
+// La 3ra Sección solo se refresca al hacer clic en "Buscar" -a diferencia de
+// la 1ra Sección (actualizarVistaAplicacion), que exige la combinación EXACTA
+// y se refresca solo en cada cambio de checkbox/polling-.
+btnBuscar.addEventListener('click', buscarArchivosPorOpciones);
 
 // Guardado para poder navegar hacia arriba con el botón "Subir un nivel"
 let tokenPadreActualExplorador = null;
@@ -179,11 +188,11 @@ function actualizarVistaAplicacion() {
             motivoError.style.display = "none";
         }
 
-        // REGLA DE RENDERIZADO - 4ta Sección (Botón): siempre se actualiza,
+        // REGLA DE RENDERIZADO - 5ta Sección (Botón): siempre se actualiza,
         // independientemente de si hay una notificación de subida en pantalla.
         btnSubir.disabled = !data.valido;
 
-        // REGLA DE RENDERIZADO - 3ra Sección (Mensaje de Control): este polling
+        // REGLA DE RENDERIZADO - 4ta Sección (Mensaje de Control): este polling
         // corre cada 2s (ver INTERVALO_REFRESCO_MS), así que si hay una notificación
         // de subida reciente en pantalla (ver mostrarNotificacionSubida) no la
         // pisamos - se limpia sola con su propio setTimeout.
@@ -201,13 +210,61 @@ function actualizarVistaAplicacion() {
     .catch(err => console.error("Error al procesar opciones:", err));
 }
 
-// Cuánto tiempo se muestra la notificación de subida en la 3ra Sección antes
+// 3ra Sección (Resultados de Búsqueda): a diferencia de actualizarVistaAplicacion
+// (combinación EXACTA, se refresca sola), esta consulta es por subconjunto -
+// POST /api/buscar devuelve todo archivo cuyas opciones de identidad incluyan
+// TODAS las opciones actualmente seleccionadas- y solo corre cuando el
+// usuario hace clic en "Buscar".
+function buscarArchivosPorOpciones() {
+    const opciones = obtenerOpcionesSeleccionadas();
+
+    if (opciones.length === 0) {
+        listaResultadosBusqueda.innerHTML = `<li class="txt-muted">Seleccione al menos una opción antes de buscar.</li>`;
+        return;
+    }
+
+    fetch('/api/buscar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opciones: opciones })
+    })
+    .then(res => res.json())
+    .then(data => {
+        listaResultadosBusqueda.innerHTML = "";
+
+        if (data.archivos.length === 0) {
+            listaResultadosBusqueda.innerHTML = `<li class="txt-muted">📂 Ningún archivo tiene todas las opciones seleccionadas entre sus opciones de identidad.</li>`;
+            return;
+        }
+
+        data.archivos.forEach(file => {
+            const urlArchivo = `/media/${file.id}`;
+
+            listaResultadosBusqueda.innerHTML += `
+                <li>
+                    <span>
+                        📄
+                        <a href="${urlArchivo}" target="_blank" class="file-link">
+                            <b>${file.nombre}</b>
+                        </a>
+                    </span>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="badge-info">PK: ${file.id}</span>
+                        <span class="badge-info" style="background:#bfdbfe;">Hash: ${file.hash}</span>
+                    </div>
+                </li>`;
+        });
+    })
+    .catch(err => console.error("Error al buscar archivos:", err));
+}
+
+// Cuánto tiempo se muestra la notificación de subida en la 4ta Sección antes
 // de que el polling normal (actualizarVistaAplicacion) retome el mensaje de
 // control habitual.
 const DURACION_NOTIFICACION_SUBIDA_MS = 4000;
 let notificacionSubidaActiva = false;
 
-// Muestra el resultado de una subida exitosa en la 3ra Sección ("Estado de
+// Muestra el resultado de una subida exitosa en la 4ta Sección ("Estado de
 // Combinación") en vez de un alert() bloqueante. Ver el guard
 // `notificacionSubidaActiva` en actualizarVistaAplicacion: sin él, el polling
 // de 2s tapa este mensaje casi de inmediato.
