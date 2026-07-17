@@ -55,6 +55,21 @@ class TestAlmacenamientoReferenciadoContencion:
         with pytest.raises(ValueError):
             almacenamiento.renombrar(fuera_por_traversal, "hackeado")
 
+    def test_renombrar_con_destino_que_escapa_la_raiz_se_rechaza(self, raiz):
+        # El origen es válido, pero nombre_nuevo intenta escapar la raíz vía
+        # "..": el destino construido (directorio + nombre_nuevo) debe
+        # validarse por separado del origen.
+        origen = os.path.join(raiz, "doc.txt")
+        with open(origen, "w") as f:
+            f.write("contenido")
+
+        almacenamiento = AlmacenamientoReferenciado(raiz)
+        with pytest.raises(ValueError):
+            almacenamiento.renombrar(origen, "../../etc/cron.d/evil")
+
+        # El archivo original no debe haberse movido/renombrado.
+        assert os.path.exists(origen)
+
     def test_existe_fuera_de_la_raiz_devuelve_false_aunque_el_archivo_exista(self, raiz):
         almacenamiento = AlmacenamientoReferenciado(raiz)
         assert almacenamiento.existe("/etc/passwd") is False
