@@ -1,11 +1,14 @@
 """
-Proceso standalone que observa storage_database/documents_pool/ y mantiene la
-tabla `archivos` sincronizada con lo que realmente existe en disco.
+Proceso standalone que mantiene la tabla `archivos` sincronizada con lo que
+realmente existe en disco. Los archivos ya no se copian a documents_pool/
+(cada fila guarda la ruta absoluta original, ver AlmacenamientoReferenciado
+en backend/services/storage.py) - solo la base de datos catalogo_archivos.db
+vive ahí.
 
-Si un archivo se elimina manualmente (fuera de la app, ej. `rm` o un gestor de
-archivos), su registro correspondiente en catalogo_archivos.db queda huérfano
--la app no se entera-. Este script revisa periódicamente cada registro y
-borra los que ya no tienen su archivo físico en documents_pool/.
+Si un archivo se elimina o mueve manualmente (fuera de la app, ej. `rm` o un
+gestor de archivos), su registro correspondiente en catalogo_archivos.db
+queda huérfano -la app no se entera-. Este script revisa periódicamente cada
+registro y borra los que ya no tienen su archivo físico en su ruta original.
 
 Uso:
     venv/bin/python storage_database/watcher.py
@@ -29,19 +32,20 @@ POLL_INTERVAL_SECONDS = 2
 
 
 def sincronizar_una_vez(conn):
-    """Elimina de `archivos` cualquier registro cuyo archivo físico ya no exista."""
+    """Elimina de `archivos` cualquier registro cuya ruta absoluta ya no exista."""
     cursor = conn.cursor()
     cursor.execute("SELECT id, nombre_original FROM archivos")
     registros = cursor.fetchall()
 
     eliminados = 0
-    for archivo_id, nombre_original in registros:
-        ruta_fisica = os.path.join(MEDIA_FOLDER, nombre_original)
-        if not os.path.exists(ruta_fisica):
+    for archivo_id, ruta_absoluta in registros:
+        if not os.path.exists(ruta_absoluta):
             cursor.execute("DELETE FROM archivos WHERE id = ?", (archivo_id,))
             eliminados += 1
-            print(f"[watcher] '{nombre_original}' (id={archivo_id}) ya no está en disco "
-                  "-> registro eliminado de la base de datos.")
+            print(
+                f"[watcher] '{ruta_absoluta}' (id={archivo_id}) ya no está en su ubicación "
+                "original -> registro eliminado de la base de datos."
+            )
 
     if eliminados:
         conn.commit()
@@ -55,7 +59,7 @@ def main():
         print("[watcher] Ejecutá 'make run' al menos una vez para crearla, luego reintentá.")
         sys.exit(1)
 
-    print(f"[watcher] Observando {MEDIA_FOLDER} cada {POLL_INTERVAL_SECONDS}s (Ctrl+C para detener)...")
+    print(f"[watcher] Verificando rutas absolutas cada {POLL_INTERVAL_SECONDS}s (Ctrl+C para detener)...")
     conn = sqlite3.connect(DB_PATH)
     try:
         while True:
