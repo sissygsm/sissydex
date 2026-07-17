@@ -32,15 +32,28 @@
     </section>
 
 
-    <!-- 3ra Sección: Cuadro de Texto de Estado de Negocio -->
+    <!-- 3ra Sección: Resultados de Búsqueda por subconjunto de opciones (no
+         se refresca sola: solo se dispara con el botón Buscar, a diferencia
+         de la 1ra Sección que exige la combinación EXACTA y se refresca en
+         cada cambio de checkbox) -->
     <section class="card-section">
-        <h2>3ra Sección: Estado de Combinación</h2>
+        <h2>3ra Sección: Resultados de Búsqueda</h2>
+        <p>Muestra los archivos cuyas opciones de identidad incluyen TODAS las opciones actualmente seleccionadas (el archivo puede tener además otras opciones no seleccionadas):</p>
+        <button id="btn-buscar" class="btn-agregar">Buscar</button>
+        <ul id="lista-resultados-busqueda" class="file-list">
+            <li class="txt-muted">Seleccione opciones y presione "Buscar" para consultar coincidencias.</li>
+        </ul>
+    </section>
+
+    <!-- 4ta Sección: Cuadro de Texto de Estado de Negocio -->
+    <section class="card-section">
+        <h2>4ta Sección: Estado de Combinación</h2>
         <div id="estado-mensaje" class="success-box">Agregar un nuevo archivo con el botón AGREGAR</div>
     </section>
 
-    <!-- 4ta Sección: Referenciar un archivo existente (no se copia ni se sube) -->
+    <!-- 5ta Sección: Referenciar un archivo existente (no se copia ni se sube) -->
     <section class="card-section">
-        <h2>4ta Sección: Indexación de Archivos por Ruta</h2>
+        <h2>5ta Sección: Indexación de Archivos por Ruta</h2>
         <p>El archivo permanece en su ubicación original: solo se guarda su ruta y se le antepone el hash al nombre.</p>
         <button id="btn-subir" class="btn-agregar">AGREGAR ARCHIVO</button>
     </section>
