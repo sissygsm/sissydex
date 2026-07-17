@@ -41,36 +41,39 @@ class EstrategiaAlmacenamiento(ABC):
     def existe(self, identificador: str) -> bool: ...
 
 
-class AlmacenamientoLocal(EstrategiaAlmacenamiento):
+class AlmacenamientoReferenciado(EstrategiaAlmacenamiento):
     """
-    Concrete Strategy: filesystem local. Mismo comportamiento exacto que el
-    código anterior a este refactor (mismos os.rename/os.remove/os.path.exists,
-    solo movidos detrás de esta interfaz).
-    """
+    Concrete Strategy: el archivo NUNCA se copia. Existe porque copiar cada
+    archivo tagueado a documents_pool/ dejó de ser viable con muy poco disco
+    libre. Los identificadores que usa esta estrategia son siempre rutas
+    absolutas al archivo en su ubicación original (elegida vía el explorador
+    de directorios del backend, ver LogicaNegocioArchivos.explorar_directorio).
 
-    def __init__(self, directorio_base: str):
-        self._base = directorio_base
-        os.makedirs(self._base, exist_ok=True)
+    `renombrar` opera "in place": conserva el directorio original y solo
+    cambia el nombre base (para anteponer o quitar el prefijo de hash), nunca
+    mueve el archivo de carpeta.
+    """
 
     def guardar(self, nombre_base: str, archivo_flask) -> str:
-        ruta = os.path.join(self._base, nombre_base)
-        archivo_flask.save(ruta)
-        return nombre_base
+        raise NotImplementedError(
+            "AlmacenamientoReferenciado nunca copia bytes nuevos: el archivo ya "
+            "existe en disco y se referencia por ruta absoluta (ver "
+            "LogicaNegocioArchivos.procesar_y_guardar_archivo)."
+        )
 
     def renombrar(self, identificador_actual: str, nombre_nuevo: str) -> str:
-        ruta_actual = os.path.join(self._base, identificador_actual)
-        ruta_nueva = os.path.join(self._base, nombre_nuevo)
-        if os.path.exists(ruta_actual):
-            os.rename(ruta_actual, ruta_nueva)
-        return nombre_nuevo
+        directorio = os.path.dirname(identificador_actual)
+        ruta_nueva = os.path.join(directorio, nombre_nuevo)
+        if os.path.exists(identificador_actual):
+            os.rename(identificador_actual, ruta_nueva)
+        return ruta_nueva
 
     def eliminar(self, identificador: str) -> None:
-        ruta = os.path.join(self._base, identificador)
-        if os.path.exists(ruta):
-            os.remove(ruta)
+        if os.path.exists(identificador):
+            os.remove(identificador)
 
     def existe(self, identificador: str) -> bool:
-        return os.path.exists(os.path.join(self._base, identificador))
+        return os.path.exists(identificador)
 
 
 class AlmacenamientoS3(EstrategiaAlmacenamiento):
@@ -105,7 +108,7 @@ class AlmacenamientoS3(EstrategiaAlmacenamiento):
         self._s3.delete_object(Bucket=self._bucket, Key=identificador)
 
     def existe(self, identificador: str) -> bool:
-        # boto3 siempre trae botocore; import perezoso igual, ver docstring de clase.
+        # boto3 siempre trae botocore; import perezoso igual, ver docstring de clase
         from botocore.exceptions import ClientError
 
         try:
