@@ -52,7 +52,25 @@ class AlmacenamientoReferenciado(EstrategiaAlmacenamiento):
     `renombrar` opera "in place": conserva el directorio original y solo
     cambia el nombre base (para anteponer o quitar el prefijo de hash), nunca
     mueve el archivo de carpeta.
+
+    `raiz_permitida` (constructor) es la única carpeta -y sus subcarpetas-
+    donde esta clase puede tocar el filesystem: cada identificador se resuelve
+    (os.path.realpath, sigue symlinks y colapsa "..") y se descarta si el
+    resultado no queda contenido ahí, inline, justo antes de cada llamada a
+    os.rename/os.remove/os.path.exists. El chequeo se repite en cada método
+    (en vez de vivir en un único helper compartido) a propósito: CodeQL
+    (py/path-injection) no reconoce un sanitizer aplicado dentro de una
+    función auxiliar como una barrera para el dato que termina en el
+    llamador -solo reconoce el patrón guardián cuando está en la misma
+    función que toca el filesystem-, así que la duplicación acá es la forma
+    real (no cosmética) de que el análisis estático confirme la validación.
+    Es además defensa en profundidad real: aunque quien llame a esta clase
+    (hoy LogicaNegocioArchivos) ya haya validado la ruta contra la misma
+    raíz, esta clase nunca confía ciegamente en su llamador.
     """
+
+    def __init__(self, raiz_permitida: str):
+        self._raiz = os.path.realpath(raiz_permitida)
 
     def guardar(self, nombre_base: str, archivo_flask) -> str:
         raise NotImplementedError(
@@ -62,18 +80,28 @@ class AlmacenamientoReferenciado(EstrategiaAlmacenamiento):
         )
 
     def renombrar(self, identificador_actual: str, nombre_nuevo: str) -> str:
-        directorio = os.path.dirname(identificador_actual)
+        origen = os.path.realpath(identificador_actual)
+        if not (origen == self._raiz or origen.startswith(self._raiz + os.sep)):
+            raise ValueError(f"'{identificador_actual}' está fuera de la raíz permitida.")
+
+        directorio = os.path.dirname(origen)
         ruta_nueva = os.path.join(directorio, nombre_nuevo)
-        if os.path.exists(identificador_actual):
-            os.rename(identificador_actual, ruta_nueva)
+        if os.path.exists(origen):
+            os.rename(origen, ruta_nueva)
         return ruta_nueva
 
     def eliminar(self, identificador: str) -> None:
-        if os.path.exists(identificador):
-            os.remove(identificador)
+        objetivo = os.path.realpath(identificador)
+        if not (objetivo == self._raiz or objetivo.startswith(self._raiz + os.sep)):
+            return
+        if os.path.exists(objetivo):
+            os.remove(objetivo)
 
     def existe(self, identificador: str) -> bool:
-        return os.path.exists(identificador)
+        objetivo = os.path.realpath(identificador)
+        if not (objetivo == self._raiz or objetivo.startswith(self._raiz + os.sep)):
+            return False
+        return os.path.exists(objetivo)
 
 
 class AlmacenamientoS3(EstrategiaAlmacenamiento):
