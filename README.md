@@ -211,10 +211,22 @@ de la feature (elegir cualquier archivo propio), así que en cambio se
 restringe a una raíz *configurable*: `RAIZ_PERMITIDA` (`backend/services/
 document_logic.py`) es el home del usuario por defecto, y se puede apuntar a
 otro disco/punto de montaje con la variable de entorno
-`SISSYDEX_ROOT_PERMITIDO`. Toda ruta que llega desde un request se resuelve
-con `os.path.realpath` (sigue symlinks, colapsa "..") y se descarta si el
-resultado no queda contenido dentro de esa raíz -de ahí en más solo se usa
-el valor ya resuelto, nunca el string crudo-.
+`SISSYDEX_ROOT_PERMITIDO`.
+
+El chequeo (`os.path.realpath` para colapsar ".."/symlinks, y verificar que
+el resultado sea la raíz o empiece con `raíz + separador`) está escrito
+inline en cada punto que toca el filesystem -`explorar_directorio`, la ruta
+`/api/subir`, y cada método de `AlmacenamientoReferenciado` en `storage.py`-
+en vez de vivir en una sola función auxiliar compartida. Una versión
+anterior sí centralizaba esto en un helper, y CodeQL siguió marcando los
+mismos puntos después: no reconoce un sanitizer aplicado dentro de una
+función llamada como una barrera para el valor que recibe quien la llama,
+solo un chequeo escrito inline en la misma función que toca disco.
+`AlmacenamientoReferenciado` además recibe `raiz_permitida` por constructor y
+la hace cumplir por su cuenta (`renombrar` lanza `ValueError` fuera de la
+raíz; `eliminar`/`existe` no hacen nada / devuelven `False`) -defensa en
+profundidad real, no solo para conformar al scanner: la capa de storage
+tampoco confía ciegamente en quien la llama-.
 
 Por la misma razón (elegir cualquier archivo = superficie de ataque real sin
 login), `make run` liga el server a `127.0.0.1` únicamente por defecto
