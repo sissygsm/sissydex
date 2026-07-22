@@ -17,7 +17,7 @@ jobs:
     - uses: actions/checkout@v7 # Mantenemos v7 para evitar advertencias de deprecación
     
     - name: Set up Python 3.11
-      uses: actions/setup-python@v6 # Mantenemos v6
+      uses: actions/setup-python@v7 # Mantenemos v6
       with:
         python-version: "3.11"
         cache: 'pip' # <-- LA MEJORA ADOPTADA: Activa la caché nativa de GitHub
